@@ -426,3 +426,29 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+# ---------------------------------------------------------------------------
+# Verifiable Quantum Circuit Compilation — local competition files.
+# The dataset is about 1 GB and license-restricted. Do not commit it.
+# Fetch with scripts/fetch_data.sh into /data (git-ignored).
+# ---------------------------------------------------------------------------
+/data/
+/submissions/
+/runs/
+
+# kickmix binaries from the Kaggle image, and other native build outputs
+**/kickmix.so
+**/*.so
+
+# Circuit and factorization artifacts. Commit none of these.
+*.kmb
+*.kmx
+*.npz
+
+# Kaggle API credentials
+.kaggle/
+kaggle.json
+
+# Local virtualenv
+.venv/
+venv/

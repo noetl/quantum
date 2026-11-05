@@ -1,0 +1,165 @@
+# NoETL playbook for the VQCC pipeline.
+#
+# Shape matches current NoETL playbooks (apiVersion noetl.io/v2, python steps
+# with def main()). It checks that the local tools exist and that competition
+# data is present. It does not generate circuits, download data, or record a
+# score. Run the scripts in scripts/ for formula checks and packaging.
+#
+# Precedent, not a dependency: the CUDA-Q fixture at NoETL tag v2.10.15,
+# tests/fixtures/playbooks/quantum_cudaq/quantum_cudaq.yaml
+# (catalog path tests/quantum/cudaq_ai_pipeline). That fixture is not on
+# current NoETL main. It demonstrates orchestration of a quantum workload,
+# an analysis step, and persistence. This playbook is the competition entry
+# point and does not reuse that demo's results.
+apiVersion: noetl.io/v2
+kind: Playbook
+metadata:
+  name: vqcc_pipeline
+  path: playbooks/vqcc_pipeline
+  description: >
+    Sequence a data check, a per-task status report, a labeled-cost tool
+    check, and a packaging tool check for invsqrt, dqi, and dfthcsos.
+    Leaderboard score stays null.
+  version: "0.1.0"
+  labels:
+    domain: quantum
+    competition: google-verifiable-quantum-circuit-compilation
+
+workload:
+  tasks:
+    - invsqrt
+    - dqi
+    - dfthcsos
+  data_dir: data
+  verifiers_dir: data/verifiers
+
+workflow:
+  - step: check_data
+    desc: Report whether the git-ignored competition data is on disk.
+    tool:
+      kind: python
+      code: |
+        def main():
+            from pathlib import Path
+            data = Path("data")
+            verifiers = data / "verifiers"
+            ready = verifiers.is_dir()
+            return {
+                "status": "ready" if ready else "blocked",
+                "data_dir_exists": data.is_dir(),
+                "verifiers_present": ready,
+                "reason": None if ready else "data/verifiers is absent; see docs/data.md",
+                "leaderboard_score": None,
+                "records_score": False,
+            }
+    next:
+      spec:
+        mode: exclusive
+      arcs:
+        - step: task_status
+
+  - step: task_status
+    desc: State each task separately. Generators are not implemented.
+    tool:
+      kind: python
+      code: |
+        def main():
+            tasks = ["invsqrt", "dqi", "dfthcsos"]
+            return {
+                "status": "not_implemented",
+                "tasks": [
+                    {
+                        "task": name,
+                        "generator": "not implemented",
+                        "circuit_written": False,
+                        "verifier_status": "not run",
+                    }
+                    for name in tasks
+                ],
+                "leaderboard_score": None,
+            }
+    next:
+      spec:
+        mode: exclusive
+      arcs:
+        - step: score_tool
+
+  - step: score_tool
+    desc: Confirm scripts/score.py is present. Do not pass a made-up cost.
+    tool:
+      kind: python
+      code: |
+        def main():
+            import subprocess
+            import sys
+            from pathlib import Path
+            script = Path("scripts/score.py")
+            if not script.is_file():
+                return {
+                    "status": "error",
+                    "reason": "scripts/score.py missing",
+                    "leaderboard_score": None,
+                }
+            proc = subprocess.run(
+                [sys.executable, str(script), "--help"],
+                capture_output=True,
+                text=True,
+            )
+            return {
+                "status": "ok" if proc.returncode == 0 else "error",
+                "returncode": proc.returncode,
+                "leaderboard_score": None,
+                "note": "Help text only. No cost was evaluated.",
+            }
+    next:
+      spec:
+        mode: exclusive
+      arcs:
+        - step: package_tool
+
+  - step: package_tool
+    desc: Confirm the packager is present. Do not build a zip in this step.
+    tool:
+      kind: python
+      code: |
+        def main():
+            import subprocess
+            import sys
+            from pathlib import Path
+            script = Path("scripts/package_submission.py")
+            if not script.is_file():
+                return {
+                    "status": "error",
+                    "reason": "scripts/package_submission.py missing",
+                    "zip_written": False,
+                    "leaderboard_score": None,
+                }
+            proc = subprocess.run(
+                [sys.executable, str(script), "--help"],
+                capture_output=True,
+                text=True,
+            )
+            return {
+                "status": "ok" if proc.returncode == 0 else "error",
+                "returncode": proc.returncode,
+                "zip_written": False,
+                "leaderboard_score": None,
+            }
+    next:
+      spec:
+        mode: exclusive
+      arcs:
+        - step: end
+
+  - step: end
+    desc: Close the run with an explicit null leaderboard score.
+    tool:
+      kind: python
+      code: |
+        def main():
+            return {
+                "status": "ok",
+                "leaderboard_score": None,
+                "experiment_logged": False,
+                "note": "No score recorded. Append a row with scripts/log_experiment.py only after a real measurement.",
+            }
