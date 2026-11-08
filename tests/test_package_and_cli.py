@@ -235,8 +235,19 @@ class CliTests(unittest.TestCase):
         steps = [step["step"] for step in document["workflow"]]
         self.assertEqual(
             steps,
-            ["check_data", "task_status", "score_tool", "package_tool", "end"],
+            [
+                "prepare",
+                "check_data",
+                "adapt_invsqrt",
+                "adapt_dqi",
+                "adapt_dfthcsos",
+                "verify",
+                "cost",
+                "package",
+                "record",
+            ],
         )
+        self.assertTrue(all(step["tool"]["kind"] == "shell" for step in document["workflow"]))
 
 
 if __name__ == "__main__":

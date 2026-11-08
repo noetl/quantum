@@ -1,165 +1,135 @@
-# NoETL playbook for the VQCC pipeline.
+# VQCC baseline on the NoETL 5.3.2 local runtime.
 #
-# Shape matches current NoETL playbooks (apiVersion noetl.io/v2, python steps
-# with def main()). It checks that the local tools exist and that competition
-# data is present. It does not generate circuits, download data, or record a
-# score. Run the scripts in scripts/ for formula checks and packaging.
+# Local execution supports kind: shell with cmds, and chains steps with
+# next: [{step: ...}]. kind: python is not executed by this runtime.
+# Python and kickmix are invoked from those shell commands.
 #
-# Precedent, not a dependency: the CUDA-Q fixture at NoETL tag v2.10.15,
-# tests/fixtures/playbooks/quantum_cudaq/quantum_cudaq.yaml
-# (catalog path tests/quantum/cudaq_ai_pipeline). That fixture is not on
-# current NoETL main. It demonstrates orchestration of a quantum workload,
-# an analysis step, and persistence. This playbook is the competition entry
-# point and does not reuse that demo's results.
+# Spec: specs/001-noetl-pipeline/spec.md at main
+# 0b3915b38fb2de7897b735995b7be33fde617c63
+# Issues: https://github.com/noetl/quantum/issues/2 through /9
+#
+# Default workload mode is competition: no circuit bytes are written when
+# data/ has no baseline, verification is blocked, and leaderboard_score is null.
+# Structural mode (--set mode=structural) writes labeled kickmix fixtures
+# under runs/ and still does not mark them verified.
 apiVersion: noetl.io/v2
 kind: Playbook
 metadata:
   name: vqcc_pipeline
   path: playbooks/vqcc_pipeline
-  description: >
-    Sequence a data check, a per-task status report, a labeled-cost tool
-    check, and a packaging tool check for invsqrt, dqi, and dfthcsos.
-    Leaderboard score stays null.
-  version: "0.1.0"
-  labels:
-    domain: quantum
-    competition: google-verifiable-quantum-circuit-compilation
-
 workload:
-  tasks:
-    - invsqrt
-    - dqi
-    - dfthcsos
+  mode: competition
   data_dir: data
-  verifiers_dir: data/verifiers
-
+  runs_root: runs
+  repo_root: "."
 workflow:
+  - step: prepare
+    desc: Create a git-ignored run directory and record the spec SHA.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline prepare
+          --mode "{{ workload.mode }}"
+          --data-dir "{{ workload.data_dir }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: check_data
+
   - step: check_data
-    desc: Report whether the git-ignored competition data is on disk.
+    desc: Report whether data/verifiers is on disk. Absence is a block, not a pass.
     tool:
-      kind: python
-      code: |
-        def main():
-            from pathlib import Path
-            data = Path("data")
-            verifiers = data / "verifiers"
-            ready = verifiers.is_dir()
-            return {
-                "status": "ready" if ready else "blocked",
-                "data_dir_exists": data.is_dir(),
-                "verifiers_present": ready,
-                "reason": None if ready else "data/verifiers is absent; see docs/data.md",
-                "leaderboard_score": None,
-                "records_score": False,
-            }
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline check-data
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
     next:
-      spec:
-        mode: exclusive
-      arcs:
-        - step: task_status
+      - step: adapt_invsqrt
 
-  - step: task_status
-    desc: State each task separately. Generators are not implemented.
+  - step: adapt_invsqrt
+    desc: Import an invsqrt baseline if one exists, or write nothing.
     tool:
-      kind: python
-      code: |
-        def main():
-            tasks = ["invsqrt", "dqi", "dfthcsos"]
-            return {
-                "status": "not_implemented",
-                "tasks": [
-                    {
-                        "task": name,
-                        "generator": "not implemented",
-                        "circuit_written": False,
-                        "verifier_status": "not run",
-                    }
-                    for name in tasks
-                ],
-                "leaderboard_score": None,
-            }
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline adapt
+          --task invsqrt
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
     next:
-      spec:
-        mode: exclusive
-      arcs:
-        - step: score_tool
+      - step: adapt_dqi
 
-  - step: score_tool
-    desc: Confirm scripts/score.py is present. Do not pass a made-up cost.
+  - step: adapt_dqi
+    desc: Import a dqi baseline if one exists, or write nothing.
     tool:
-      kind: python
-      code: |
-        def main():
-            import subprocess
-            import sys
-            from pathlib import Path
-            script = Path("scripts/score.py")
-            if not script.is_file():
-                return {
-                    "status": "error",
-                    "reason": "scripts/score.py missing",
-                    "leaderboard_score": None,
-                }
-            proc = subprocess.run(
-                [sys.executable, str(script), "--help"],
-                capture_output=True,
-                text=True,
-            )
-            return {
-                "status": "ok" if proc.returncode == 0 else "error",
-                "returncode": proc.returncode,
-                "leaderboard_score": None,
-                "note": "Help text only. No cost was evaluated.",
-            }
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline adapt
+          --task dqi
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
     next:
-      spec:
-        mode: exclusive
-      arcs:
-        - step: package_tool
+      - step: adapt_dfthcsos
 
-  - step: package_tool
-    desc: Confirm the packager is present. Do not build a zip in this step.
+  - step: adapt_dfthcsos
+    desc: Import a dfthcsos directory if one exists, or write nothing.
     tool:
-      kind: python
-      code: |
-        def main():
-            import subprocess
-            import sys
-            from pathlib import Path
-            script = Path("scripts/package_submission.py")
-            if not script.is_file():
-                return {
-                    "status": "error",
-                    "reason": "scripts/package_submission.py missing",
-                    "zip_written": False,
-                    "leaderboard_score": None,
-                }
-            proc = subprocess.run(
-                [sys.executable, str(script), "--help"],
-                capture_output=True,
-                text=True,
-            )
-            return {
-                "status": "ok" if proc.returncode == 0 else "error",
-                "returncode": proc.returncode,
-                "zip_written": False,
-                "leaderboard_score": None,
-            }
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline adapt
+          --task dfthcsos
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
     next:
-      spec:
-        mode: exclusive
-      arcs:
-        - step: end
+      - step: verify
 
-  - step: end
-    desc: Close the run with an explicit null leaderboard score.
+  - step: verify
+    desc: Look for competition verifiers. Do not substitute a fixed test set.
     tool:
-      kind: python
-      code: |
-        def main():
-            return {
-                "status": "ok",
-                "leaderboard_score": None,
-                "experiment_logged": False,
-                "note": "No score recorded. Append a row with scripts/log_experiment.py only after a real measurement.",
-            }
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: cost
+
+  - step: cost
+    desc: Price measured kickmix counts under a named formula. Leave LB null.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline cost
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: package
+
+  - step: package
+    desc: Refuse a submission zip while any task is unverified.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline package
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: record
+
+  - step: record
+    desc: Write provenance.json. Do not append an invented experiments row.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline record
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
