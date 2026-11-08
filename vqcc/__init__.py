@@ -1,7 +1,7 @@
-"""Local helpers for the Verifiable Quantum Circuit Compilation entry.
+"""VQCC baseline orchestrated by NoETL.
 
-Formula helpers evaluate numbers the caller supplies. They do not download
-competition data and they do not record leaderboard scores.
+Formula helpers evaluate numbers the caller supplies. The pipeline records
+provenance for playbook runs. It does not invent leaderboard scores.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

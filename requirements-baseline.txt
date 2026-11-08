@@ -1,0 +1,6 @@
+# Pinned to the versions executed for the baseline in this repository.
+# noetl 5.3.2 local runtime (kind: shell / cmds). kickmix 1.0.0 is the public
+# Apache-2.0 package from Qualtran, not the Kaggle competition image binary.
+noetl==5.3.2
+kickmix==1.0.0
+PyYAML==6.0.2

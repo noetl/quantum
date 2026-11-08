@@ -1,0 +1,141 @@
+# User Guide
+
+Commands below were run with Python 3.12, NoETL 5.3.2, and kickmix 1.0.0.
+Run them from the repository root.
+
+## Setup
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-baseline.txt
+python -m unittest discover -s tests -t .
+```
+
+`.venv/` is git-ignored. The install does not download the Kaggle dataset and
+does not accept competition rules.
+
+Confirm the CLI:
+
+```bash
+noetl run playbooks/vqcc_pipeline.yaml --runtime local --json
+```
+
+Expect `status: ok`, nine executed steps, and `leaderboard_score: null` in
+`final_result`.
+
+## Data acquisition
+
+The dataset is about 1 GB and license-restricted. It is not in git.
+
+`scripts/fetch_data.sh` prints the steps and does not download:
+
+```bash
+scripts/fetch_data.sh
+```
+
+A download happens only when a person who has already accepted the rules
+passes `--download`. That requires:
+
+1. `pip install kaggle` (separate from `requirements-baseline.txt`).
+2. Rules accepted in the browser while logged in:
+   <https://www.kaggle.com/competitions/google-verifiable-quantum-circuit-compilation/rules>
+3. `~/.kaggle/kaggle.json` mode `600`.
+
+```bash
+scripts/fetch_data.sh --download
+```
+
+This repository's automation does not accept the rules, join the competition,
+or upload a submission. The blocker is tracked in
+[issue 8](https://github.com/noetl/quantum/issues/8).
+
+After a human download, leave the files in `data/`. The playbook looks for:
+
+- `data/verifiers/`
+- `data/verifiers/<task>/SCORING_README.md`
+- `data/verifiers/<task>/verify` (optional executable hook; a zero exit is
+  recorded and is **not** treated as official verification)
+- `data/sample_submission/invsqrt.kmb` or `.kmx` (and the same for `dqi`)
+- `data/sample_submission/dfthcsos/` or `data/dfthcsos/`
+
+Those relative paths are the ones the adapter searches. They are not a claim
+that the official zip uses exactly those names. A miss is reported as absent.
+
+## Register
+
+Nothing is registered with a NoETL server for the local baseline. Registration
+is for the distributed runtime, which this baseline does not require.
+
+```bash
+noetl run playbooks/vqcc_pipeline.yaml --runtime local --json
+```
+
+is the whole register-and-run step for local use. The playbook file is the
+catalog entry.
+
+## Run
+
+Competition mode:
+
+```bash
+noetl run playbooks/vqcc_pipeline.yaml --runtime local --json
+```
+
+Structural fixtures (real kickmix files, not a submission):
+
+```bash
+noetl run playbooks/vqcc_pipeline.yaml --runtime local --json --set mode=structural
+```
+
+Point at another data directory without moving the repo:
+
+```bash
+noetl run playbooks/vqcc_pipeline.yaml --runtime local --json \
+  --set data_dir=/absolute/path/to/data \
+  --set runs_root=/absolute/path/to/runs \
+  --set repo_root="$PWD"
+```
+
+## Verify
+
+Read `final_result` from the JSON outcome, then the provenance file it names.
+
+A blocked run looks like:
+
+- `verification_status`: `blocked`
+- `package_status`: `not_ready`
+- `zip_written`: false
+- `leaderboard_score`: null
+- each task `competition_verified`: false
+
+That is the expected result until the official verifier is available. It is
+not a pass.
+
+## Package
+
+The playbook refuses to write a zip while verification is false.
+
+Layout checks on files you already have:
+
+```bash
+python3 scripts/package_submission.py \
+  --invsqrt path/invsqrt.kmb \
+  --dqi path/dqi.kmb \
+  --dfthcsos path/dfthcsos \
+  --output submissions/submission.zip
+```
+
+`submissions/` is git-ignored. A zip produced this way is a layout check. The
+playbook will still not call it submission-ready unless `competition_verified`
+is true, which this baseline does not set.
+
+## Scores
+
+```bash
+python3 scripts/score.py invsqrt --qubits 3 --toffoli 1 --t-gates 1 --json
+```
+
+prints a formula evaluation and `leaderboard_score: null`. dqi and dfthcsos
+require `--source hub` or `--source paper` because those write-ups disagree.
+Do not paste those numbers into the experiments table as a run.

@@ -1,9 +1,13 @@
 # Open questions
 
 The three scoring questions are also `[NEEDS CLARIFICATION]` markers in
-`specs/001-noetl-pipeline/spec.md` (FR-006, FR-007, FR-008). They were left
-open because the Kaggle overview, rules, and data pages were rate-limited on
-2026-11-05, and because guessing would hide a real disagreement.
+`specs/001-noetl-pipeline/spec.md` (FR-006, FR-007, FR-008) at main
+`0b3915b38fb2de7897b735995b7be33fde617c63`. They stay open. The baseline
+playbook can evaluate the shared invsqrt expression from kickmix counts and
+names that source. It does not apply a dqi `R(ε)` or a dfthcsos `λ_eff`, and
+it does not treat the hub geometric mean as the official score. The Kaggle
+`verifiers/` tree is still the authority, and it is not in this repository.
+Tracked as <https://github.com/noetl/quantum/issues/5>.
 
 ## Scoring
 

@@ -9,6 +9,10 @@ No submissions yet. Leaderboard position unknown. Do not invent a Local or LB
 value. Leave the cell as `—` until a verifier run or the Kaggle leaderboard
 returns a number.
 
+Playbook runs write `runs/<id>/provenance.json` instead of appending a row
+here. That file is git-ignored. `leaderboard_score` in those records is null
+until a real leaderboard return exists.
+
 Append a row with:
 
 ```bash
