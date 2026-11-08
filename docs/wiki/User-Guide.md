@@ -99,9 +99,23 @@ noetl run playbooks/vqcc_pipeline.yaml --runtime local --json \
 
 ## Verify
 
-Read `final_result` from the JSON outcome, then the provenance file it names.
+Official reference run, only when the dataset is mounted or extracted locally:
 
-A blocked run looks like:
+```bash
+python3 kaggle/vqcc_reference_verify.py --seed 20261108
+```
+
+Or the playbook, which calls the same three scripts one after another:
+
+```bash
+noetl run playbooks/vqcc_pipeline.yaml --runtime local --json \
+  --set data_dir=/kaggle/input/competitions/google-verifiable-quantum-circuit-compilation \
+  --set seed=20261108
+```
+
+Do not add flags that shorten the official check. Timeouts default to 7200s, 7200s, and 3600s. The dqi sample is about 886 MB and is passed by path, not loaded into the playbook.
+
+A blocked run with no dataset looks like:
 
 - `verification_status`: `blocked`
 - `package_status`: `not_ready`

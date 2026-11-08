@@ -11,7 +11,7 @@ Issues: [2](https://github.com/noetl/quantum/issues/2) through
 
 ## What runs today
 
-`noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` on **NoETL 5.3.2**.
+`noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` on the PyPI CLI **noetl 5.3.2**, after the document passes `POST https://noetl.ai/api/dsl/validate` (server **3.153.0**, `noetl/server@5cf0712`, schema digest `sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6`). The workflow's first step is named `start`.
 
 With no competition data the playbook:
 
