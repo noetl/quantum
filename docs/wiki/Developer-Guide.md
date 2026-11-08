@@ -45,7 +45,7 @@ dataset is local:
 
 1. Record the official command from `verifiers/` in the issue, with the file
    path inside the dataset.
-2. Call that command from `vqcc.orchestrator._verify_one`.
+2. Call that command from `vqcc.official_verifier.run_official_task`. The current names are `verify_submission_invsqrt.py`, `verify_submission_dqi.py`, and `verifiers/dfthcsos/verify.py`.
 3. Set `competition_verified` true only from that command's success.
 4. Keep structural fixtures unable to set the flag.
 5. Add a test that a fake exit-0 script still cannot set the flag unless it

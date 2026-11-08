@@ -17,6 +17,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from vqcc.official_verifier import (
+    REFERENCE_SEED,
+    discover_dataset_root,
+    run_official_task,
+)
 from vqcc.formulas import (
     E_GAP_FLOOR_HA,
     FROBENIUS_TOLERANCE_HA,
@@ -29,7 +34,9 @@ from vqcc.formulas import (
 
 # main SHA inspected before this implementation. The spec at this commit is
 # the contract. Later commits on the implementation branch do not retarget it.
-SPEC_MAIN_SHA = "0b3915b38fb2de7897b735995b7be33fde617c63"
+# main inspected for this implementation (merge of PR #10). The spec file
+# itself was introduced at 0b3915b and was not edited by that merge.
+SPEC_MAIN_SHA = "d47053659fed3b110eb057f58d048ac50bf9ba7d"
 SPEC_PATH = "specs/001-noetl-pipeline/spec.md"
 NOETL_TESTED_VERSION = "5.3.2"
 KICKMIX_TESTED_VERSION = "1.0.0"
@@ -57,11 +64,6 @@ BASELINE_RELATIVE = {
         "dfthcsos",
     ),
 }
-
-# Optional local hook. This is not the official verifier CLI. A zero exit
-# from this hook is recorded and is not promoted to competition_verified.
-VERIFIER_HOOK = "verifiers/{task}/verify"
-SCORING_README = "verifiers/{task}/SCORING_README.md"
 
 STRUCTURAL_KMX = {
     "invsqrt": (
@@ -91,7 +93,14 @@ class PipelineError(RuntimeError):
     """The playbook step cannot continue. Not a leaderboard result."""
 
 
-def prepare_run(repo_root: Path, runs_root: Path, mode: str, data_dir: Path) -> dict:
+def prepare_run(
+    repo_root: Path,
+    runs_root: Path,
+    mode: str,
+    data_dir: Path,
+    seed: str = REFERENCE_SEED,
+    package_when_verified: bool = False,
+) -> dict:
     if mode not in {"competition", "structural"}:
         raise PipelineError("mode must be competition or structural")
     repo_root = repo_root.resolve()
@@ -127,6 +136,8 @@ def prepare_run(repo_root: Path, runs_root: Path, mode: str, data_dir: Path) -> 
             "kickmix_tested_version": KICKMIX_TESTED_VERSION,
             "kickmix": _kickmix_status(),
         },
+        "seed": str(seed),
+        "package_when_verified": bool(package_when_verified),
         "tasks": {},
         "verification": None,
         "costs": None,
@@ -144,19 +155,21 @@ def prepare_run(repo_root: Path, runs_root: Path, mode: str, data_dir: Path) -> 
 def check_data(repo_root: Path, runs_root: Path) -> dict:
     state, run_dir = _load(repo_root, runs_root)
     data_dir = Path(state["data_dir"])
+    located = _locate_dataset(data_dir, Path(state["repo_root"]))
     verifiers = data_dir / "verifiers"
-    present = verifiers.is_dir()
     state["data"] = {
         "data_dir": str(data_dir),
         "data_dir_exists": data_dir.is_dir(),
         "verifiers_dir": str(verifiers),
-        "verifiers_present": present,
-        "status": "present" if present else "absent",
+        "verifiers_present": verifiers.is_dir(),
+        "dataset": located,
+        "status": "present" if located.get("found") else "absent",
         "note": (
             None
-            if present
-            else "data/verifiers is absent. Fetch is documented in docs/data.md. "
-            "Rules were not accepted and the dataset was not downloaded by this run."
+            if located.get("found")
+            else "Official verifier scripts were not found. A shallow verifiers/ "
+            "directory is not enough. Rules were not accepted and the dataset "
+            "was not downloaded by this run."
         ),
     }
     _save(run_dir, state)
@@ -179,31 +192,85 @@ def adapt_task(repo_root: Path, runs_root: Path, task: str) -> dict:
     return _step("adapt", state, task=task, artifact=record)
 
 
-def verify(repo_root: Path, runs_root: Path) -> dict:
-    state, run_dir = _load(repo_root, runs_root)
-    data_dir = Path(state["data_dir"])
+def verify(repo_root: Path, runs_root: Path, seed: str | None = None, timeout_s: int | None = None) -> dict:
+    """Run the three official verifiers one after another."""
+
     reports = []
     for task in TASKS:
-        artifact = state["tasks"].get(task) or {
-            "role": "absent",
-            "circuit_written": False,
+        reports.append(
+            verify_official(repo_root, runs_root, task, seed=seed, timeout_s=timeout_s)
+        )
+    state, _run_dir = _load(repo_root, runs_root)
+    return _step("verify", state, **(state.get("verification") or {}))
+
+
+def verify_official(
+    repo_root: Path,
+    runs_root: Path,
+    task: str,
+    seed: str | None = None,
+    timeout_s: int | None = None,
+) -> dict:
+    if task not in TASKS:
+        raise PipelineError(f"unknown task {task}")
+    state, run_dir = _load(repo_root, runs_root)
+    if state["mode"] == "structural":
+        report = {
+            "task": task,
+            "status": "blocked",
             "competition_verified": False,
+            "official_script": False,
+            "mock_hook": False,
+            "leaderboard_score": None,
+            "reason": "structural mode does not run the official verifiers",
         }
-        report = _verify_one(data_dir, task, artifact)
-        artifact["competition_verified"] = False
-        artifact["verification"] = report
-        state["tasks"][task] = artifact
-        reports.append(report)
-    blocked = all(item["status"] == "blocked" for item in reports)
+    else:
+        dataset = (state.get("data") or {}).get("dataset")
+        if not dataset:
+            dataset = _locate_dataset(Path(state["data_dir"]), Path(state["repo_root"]))
+            state.setdefault("data", {})["dataset"] = dataset
+        if not dataset.get("found"):
+            report = {
+                "task": task,
+                "status": "blocked",
+                "competition_verified": False,
+                "official_script": True,
+                "mock_hook": False,
+                "leaderboard_score": None,
+                "reason": dataset.get("reason") or "official verifier scripts were not found",
+                "checked": dataset.get("checked"),
+            }
+        else:
+            artifact = _candidate_artifact(state, task)
+            report = run_official_task(
+                root=Path(dataset["root"]),
+                task=task,
+                artifact=artifact,
+                seed=seed or state.get("seed") or REFERENCE_SEED,
+                timeout_s=timeout_s,
+                log_dir=run_dir / "official",
+            )
+    task_state = state["tasks"].setdefault(
+        task,
+        {"role": "absent", "circuit_written": False, "competition_verified": False},
+    )
+    task_state["verification"] = report
+    task_state["competition_verified"] = bool(report.get("competition_verified"))
+    task_state["leaderboard_score"] = None
+    state["tasks"][task] = task_state
+    verified_flags = [
+        bool((state["tasks"].get(name) or {}).get("competition_verified")) for name in TASKS
+    ]
     state["verification"] = {
-        "status": "blocked" if blocked else "recorded",
-        "competition_verified": False,
+        "status": "pass" if all(verified_flags) else "blocked",
+        "competition_verified": all(verified_flags),
         "mock": False,
-        "tasks": reports,
+        "tasks": [state["tasks"].get(name, {}).get("verification") for name in TASKS],
         "leaderboard_score": None,
+        "aggregate_score": None,
     }
     _save(run_dir, state)
-    return _step("verify", state, **state["verification"])
+    return _step("verify_official", state, **report)
 
 
 def cost(repo_root: Path, runs_root: Path, aggregate: bool = False) -> dict:
@@ -242,24 +309,90 @@ def cost(repo_root: Path, runs_root: Path, aggregate: bool = False) -> dict:
 
 
 def package(repo_root: Path, runs_root: Path) -> dict:
+    from vqcc.packaging import PackageError, build_submission_zip
+
     state, run_dir = _load(repo_root, runs_root)
     reasons = []
+    roles = []
+    artifacts: dict[str, Path] = {}
     for task in TASKS:
-        artifact = state["tasks"].get(task) or {}
-        if not artifact.get("competition_verified"):
-            reasons.append(f"{task}: competition_verified is false")
-    report = {
-        "status": "not_ready",
-        "zip_written": False,
-        "zip_path": None,
-        "reasons": reasons,
-        "leaderboard_score": None,
-        "note": (
-            "The playbook does not build a submission zip until every task "
-            "has competition_verified true. Layout checks live in vqcc.packaging "
-            "and are covered by unit tests on labeled fixtures."
-        ),
-    }
+        task_state = state["tasks"].get(task) or {}
+        verification = task_state.get("verification") or {}
+        if not verification.get("competition_verified"):
+            reasons.append(
+                f"{task}: competition_verified is false "
+                f"({verification.get('status') or 'not run'})"
+            )
+            continue
+        if verification.get("evidence_class") == "fixture":
+            reasons.append(f"{task}: fixture evidence cannot open the package gate")
+            continue
+        roles.append(verification.get("bundle_role"))
+        raw = verification.get("artifact")
+        if not raw:
+            reasons.append(f"{task}: verified report has no artifact path")
+            continue
+        artifacts[task] = Path(raw)
+    if reasons:
+        report = {
+            "status": "not_ready",
+            "zip_written": False,
+            "zip_path": None,
+            "reasons": reasons,
+            "bundle_roles": roles,
+            "leaderboard_score": None,
+            "note": (
+                "Packaging stays closed until all three official verifier scripts "
+                "exit 0 on a non-fixture dataset. A generic hook exit 0 is not enough."
+            ),
+        }
+    elif not state.get("package_when_verified"):
+        report = {
+            "status": "verified_not_packaged",
+            "zip_written": False,
+            "zip_path": None,
+            "reasons": [],
+            "bundle_roles": roles,
+            "leaderboard_score": None,
+            "note": (
+                "Official verification passed. The zip was not written because "
+                "package_when_verified is false. The reference dqi circuit is large."
+            ),
+        }
+    else:
+        output = run_dir / "submission.zip"
+        try:
+            built = build_submission_zip(
+                invsqrt=artifacts["invsqrt"],
+                dqi=artifacts["dqi"],
+                dfthcsos_dir=artifacts["dfthcsos"],
+                output=output,
+            )
+        except PackageError as exc:
+            report = {
+                "status": "not_ready",
+                "zip_written": False,
+                "zip_path": None,
+                "reasons": [str(exc)],
+                "bundle_roles": roles,
+                "leaderboard_score": None,
+            }
+        else:
+            distinct = sorted(set(roles))
+            report = {
+                "status": "packaged",
+                "zip_written": True,
+                "zip_path": built["output"],
+                "entries": built["entries"],
+                "bundle_roles": roles,
+                "bundle_role": distinct[0] if len(distinct) == 1 else "mixed",
+                "leaderboard_score": None,
+                "disclaimer": built["disclaimer"],
+                "note": (
+                    "Zip of verifier-accepted files. Not a leaderboard score. "
+                    "A reference bundle is not an optimized candidate."
+                ),
+            }
     state["package"] = report
     _save(run_dir, state)
     return _step("package", state, **report)
@@ -360,59 +493,56 @@ def _import_baseline(data_dir: Path, run_dir: Path, task: str) -> dict:
     return record
 
 
-def _verify_one(data_dir: Path, task: str, artifact: dict) -> dict:
-    hook = data_dir / VERIFIER_HOOK.format(task=task)
-    readme = data_dir / SCORING_README.format(task=task)
-    verifiers_dir = data_dir / "verifiers"
-    searched = [str(verifiers_dir), str(hook), str(readme)]
-    report = {
-        "task": task,
-        "status": "blocked",
-        "competition_verified": False,
-        "mock": False,
-        "official_entrypoint_confirmed": False,
-        "searched": searched,
-        "artifact_role": artifact.get("role"),
-        "hook_ran": False,
-        "hook_exit_code": None,
-        "scoring_readme_present": readme.is_file(),
-        "leaderboard_score": None,
-    }
-    if artifact.get("role") == "absent" or not artifact:
-        report["reason"] = "no circuit artifact to verify"
-        return report
-    if not verifiers_dir.is_dir():
-        report["reason"] = "data/verifiers is absent; no fixed test vector was substituted"
-        return report
-    if not hook.is_file():
-        report["reason"] = (
-            "verifier directory is present but the local hook "
-            f"{hook} is absent. The official command line is unconfirmed, "
-            "so this run does not guess one."
+def _locate_dataset(data_dir: Path, repo_root: Path) -> dict:
+    """Search data_dir, and the Kaggle mount only for the repo data directory.
+
+    An explicit temporary directory must not fall through to a real mount.
+    That would start the full official verifiers during unit tests.
+    """
+
+    primary = discover_dataset_root(explicit=data_dir, require=False)
+    if primary.get("found"):
+        return primary
+    checked = list(primary.get("checked") or [])
+    repo_data = (repo_root / "data").resolve()
+    try:
+        requested = data_dir.resolve()
+    except OSError:
+        requested = data_dir
+    extras: list[Path] = []
+    if requested == repo_data or not data_dir.exists():
+        extras.append(
+            Path("/kaggle/input/competitions/google-verifiable-quantum-circuit-compilation")
         )
-        return report
-    if not os.access(hook, os.X_OK):
-        report["reason"] = f"{hook} exists but is not executable"
-        return report
-    target = _artifact_target(artifact)
-    completed = subprocess.run(
-        [str(hook), target],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    report["hook_ran"] = True
-    report["hook_exit_code"] = completed.returncode
-    report["hook_stdout"] = completed.stdout[-2000:]
-    report["hook_stderr"] = completed.stderr[-2000:]
-    report["status"] = "hook_recorded"
-    report["reason"] = (
-        "A local verify hook ran. Its exit code is not competition verification. "
-        "official_entrypoint_confirmed is false until the Kaggle verifier command "
-        "is identified. See https://github.com/noetl/quantum/issues/4."
-    )
-    report["competition_verified"] = False
-    return report
+    env_root = os.environ.get("VQCC_DATA_ROOT")
+    if env_root:
+        extras.append(Path(env_root))
+    for extra in extras:
+        if extra.exists() and extra.resolve() == requested:
+            continue
+        if not extra.exists():
+            checked.append(f"{extra} (absent)")
+            continue
+        found = discover_dataset_root(explicit=extra, require=False)
+        checked.extend(found.get("checked") or [])
+        if found.get("found"):
+            found["checked"] = checked
+            return found
+    primary["checked"] = checked
+    return primary
+
+
+def _candidate_artifact(state: dict, task: str) -> Path | None:
+    """Use an imported candidate when one was recorded. Otherwise the sample."""
+
+    task_state = state["tasks"].get(task) or {}
+    if task_state.get("role") != "imported_baseline":
+        return None
+    paths = task_state.get("paths") or {}
+    for key in ("file", "directory", "kmb", "kmx"):
+        if paths.get(key):
+            return Path(paths[key])
+    return None
 
 
 def _cost_one(artifact: dict) -> dict:
@@ -552,14 +682,6 @@ def _find_baseline(data_dir: Path, task: str) -> Path | None:
         if candidate.exists():
             return candidate
     return None
-
-
-def _artifact_target(artifact: dict) -> str:
-    paths = artifact.get("paths") or {}
-    for key in ("file", "kmb", "kmx", "directory"):
-        if paths.get(key):
-            return paths[key]
-    return ""
 
 
 def _require_kickmix():

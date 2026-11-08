@@ -236,12 +236,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             steps,
             [
-                "prepare",
+                "start",
                 "check_data",
                 "adapt_invsqrt",
                 "adapt_dqi",
                 "adapt_dfthcsos",
-                "verify",
+                "verify_invsqrt",
+                "verify_dqi",
+                "verify_dfthcsos",
                 "cost",
                 "package",
                 "record",

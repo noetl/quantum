@@ -53,12 +53,19 @@ If kickmix is not installed, the adapt step exits 2 and writes nothing.
 
 ## Verification boundary
 
-`competition_verified` is set to false in this baseline, including when an
-optional executable `data/verifiers/<task>/verify` exits 0. That hook is
-recorded as `hook_exit_code` only. The official verifier command line is not
-in the public Qualtran tree we inspected, and the Kaggle data page was not
-readable without login. Issue
-[4](https://github.com/noetl/quantum/issues/4).
+Official commands, seed `20261108`, absolute paths, sequential:
+
+```text
+python3 ROOT/verifiers/invsqrt/verify_submission_invsqrt.py ROOT/sample_submission/invsqrt.kmb --seed 20261108
+python3 ROOT/verifiers/dqi/verify_submission_dqi.py ROOT/sample_submission/dqi.kmb --seed 20261108
+python3 ROOT/verifiers/dfthcsos/verify.py ROOT/sample_submission/dfthcsos --seed 20261108
+```
+
+`ROOT` on Kaggle is `/kaggle/input/competitions/google-verifiable-quantum-circuit-compilation`. A generic `verifiers/<task>/verify` hook is not these scripts. A tree marked `.vqcc-fixture` cannot set `competition_verified`. Exit 0 of the official script is a task pass, not an aggregate leaderboard score. Parsed `cost:` / `score:` lines are stored with `cost_authoritative: false` because this repository has not read the scripts' print statements. No `--max-x` or other weakening flag is added.
+
+cwd defaults to the dataset root. That was not recorded in the notebook evidence. `verifier_launch.json` in the dataset root can set `cwd` and `pythonpath` when the scripts' own notes require it. `PYTHONPATH` is prefixed with the dataset root, `verifiers/`, and the script directory.
+
+This cloud workspace did not run those scripts on the competition data. The private notebook Version 3 did, with exit codes 0 and raw task costs 2076774.233715282, 24439466758900.453, and 3355599588.3155375. Those numbers are external evidence, not a result of this repository.
 
 A structural circuit loading in kickmix is `measurement.status: measured`.
 That is not competition verification.

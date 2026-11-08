@@ -35,12 +35,14 @@ class NoETLPlaybookTests(unittest.TestCase):
         self.assertEqual(
             outcome["executed_steps"],
             [
-                "prepare",
+                "start",
                 "check_data",
                 "adapt_invsqrt",
                 "adapt_dqi",
                 "adapt_dfthcsos",
-                "verify",
+                "verify_invsqrt",
+                "verify_dqi",
+                "verify_dfthcsos",
                 "cost",
                 "package",
                 "record",
