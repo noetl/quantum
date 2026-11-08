@@ -1,23 +1,39 @@
 # Playbooks
 
-`vqcc_pipeline.yaml` is the NoETL entry point for this competition. It checks
-that `data/verifiers` exists, reports that per-task generators are not
-implemented, and confirms the score and packaging scripts are on disk. The
-closing step sets `leaderboard_score` to null.
+`vqcc_pipeline.yaml` is the NoETL entry point for this competition. It was
+executed on the NoETL **5.3.2** local runtime (`noetl run --runtime local`).
 
-It follows the current NoETL playbook shape (`apiVersion: noetl.io/v2`, a
-Python `main()` in each step), the same shape as
-`tests/fixtures/playbooks/fanout_reduce/fanout_reduce_phase6.yaml` on NoETL
-`main`.
+That runtime runs `kind: shell` steps whose `cmds` are shell strings, and it
+follows `next: [{step: ...}]`. `kind: python` is rejected by the local
+runtime, so Python and kickmix are started from the shell commands.
 
-The CUDA-Q example that motivated this layout is
+Default workload:
+
+| Key | Value | Meaning |
+| --- | --- | --- |
+| `mode` | `competition` | Import a baseline file if one is on disk. Otherwise write no circuit. |
+| `data_dir` | `data` | Git-ignored competition data. Not downloaded by the playbook. |
+| `runs_root` | `runs` | Git-ignored provenance directory. |
+| `repo_root` | `.` | Directory that contains `vqcc/`. Run from the repository root. |
+
+```bash
+python3 -m pip install -r requirements-baseline.txt
+noetl run playbooks/vqcc_pipeline.yaml --runtime local --json
+noetl run playbooks/vqcc_pipeline.yaml --runtime local --json --set mode=structural
+```
+
+`--json` prints the run outcome. `final_result` is the record step.
+`leaderboard_score` is null. Structural mode writes real kickmix files under
+`runs/` and labels them `structural_fixture`. Those files are not submission
+candidates.
+
+The CUDA-Q example that motivated quantum playbooks in NoETL is
 [`tests/fixtures/playbooks/quantum_cudaq/`](https://github.com/noetl/noetl/tree/v2.10.15/tests/fixtures/playbooks/quantum_cudaq)
-at NoETL tag `v2.10.15` (playbook `quantum_cudaq_ai_pipeline`, catalog path
-`tests/quantum/cudaq_ai_pipeline`). That fixture is not on current NoETL
-`main` or tag `v4.26.2`. It shows how a playbook can run a quantum workload,
-hand the trace to an analysis step, and persist the record. It is a MaxCut
-demo, not a VQCC submission, and this repository does not copy its outputs.
+at tag `v2.10.15`. It is not on current NoETL `main`. This playbook does not
+copy that demo's results. Current NoETL 5.3.2 still uses
+`apiVersion: noetl.io/v2`.
 
-This playbook was not executed against a NoETL gateway in the change that
-added it. Register and run it with the NoETL CLI when a gateway is available.
-Until then, use the scripts in `scripts/` directly.
+Spec: `specs/001-noetl-pipeline/spec.md` at main
+`0b3915b38fb2de7897b735995b7be33fde617c63`.
+Issues: <https://github.com/noetl/quantum/issues/2> through
+<https://github.com/noetl/quantum/issues/9>.

@@ -3,11 +3,11 @@
 Home for the NoETL entry in the Kaggle competition
 [Google Quantum AI — Verifiable Quantum Circuit Compilation](https://www.kaggle.com/competitions/google-verifiable-quantum-circuit-compilation).
 
-NoETL playbooks orchestrate the work: agents and tools propose circuits, kickmix
-and the competition verifiers check them, a labeled formula explains the cost,
-and a packager builds the submission zip. This repository is the brief, the
-pipeline spec, and the skeleton. It does not contain the competition data, a
-circuit, or a score.
+NoETL playbooks orchestrate the work. The baseline playbook
+`playbooks/vqcc_pipeline.yaml` runs on the NoETL 5.3.2 local runtime. With no
+competition data it blocks verification, writes no circuit, and records
+`leaderboard_score: null`. It does not contain the Kaggle dataset or a
+leaderboard score.
 
 The team hub is <https://dg-create.com/kaggle/quantum>. Bot activity is on
 <https://dg-create.com/tower/> (see [docs/tower.md](docs/tower.md) for what that
@@ -115,11 +115,34 @@ Kaggle.
 | Entry and merger deadline | 2027-01-13 23:59 |
 | Final submission | 2027-01-20 23:59 |
 
+## Run the baseline
+
+Tested with Python 3.12, `noetl==5.3.2`, and `kickmix==1.0.0` (public
+Apache-2.0 Qualtran package, not the Kaggle image binary).
+
+```bash
+python3 -m pip install -r requirements-baseline.txt
+python3 -m unittest discover -s tests -t .
+noetl run playbooks/vqcc_pipeline.yaml --runtime local --json
+```
+
+Run that from the repository root. The local runtime executes `kind: shell`
+commands. It does not execute `kind: python`. The default mode is
+`competition`: missing `data/verifiers` blocks verification and the package
+step writes no zip. `noetl run ... --set mode=structural` writes labeled
+kickmix fixtures under git-ignored `runs/` and still sets
+`competition_verified` to false.
+
+Provenance for each run is `runs/<id>/provenance.json`. The committed
+experiments table stays empty until a real measurement exists. Details are in
+the wiki mirror under `docs/wiki/`.
+
 ## How this repo uses NoETL
 
-`playbooks/vqcc_pipeline.yaml` is the orchestrator. Each step returns a status
-and leaves `leaderboard_score` null. Per-task generators in `tasks/` exit
-without writing a circuit until kickmix and the verifiers exist under `data/`.
+`playbooks/vqcc_pipeline.yaml` is the orchestrator: prepare, check data, adapt
+each task, verify, cost, package, record. Per-task `tasks/*/generate.py`
+scripts still exit without writing a circuit. The playbook is the path that
+actually runs.
 
 The pattern comes from the NoETL CUDA-Q fixture at tag `v2.10.15`,
 [`tests/fixtures/playbooks/quantum_cudaq/`](https://github.com/noetl/noetl/tree/v2.10.15/tests/fixtures/playbooks/quantum_cudaq)
