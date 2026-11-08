@@ -3,4 +3,6 @@
 # Apache-2.0 package from Qualtran, not the Kaggle competition image binary.
 noetl==5.3.2
 kickmix==1.0.0
-PyYAML==6.0.2
+# Kaggle images already require PyYAML>=6.0.3. Do not pin 6.0.2.
+PyYAML>=6.0.3
+jsonschema>=4.20

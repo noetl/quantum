@@ -22,6 +22,7 @@ from vqcc.orchestrator import (
     prepare_run,
     record,
     verify,
+    verify_official,
 )
 
 
@@ -36,6 +37,12 @@ def main(argv: list[str] | None = None) -> int:
     prep = sub.add_parser("prepare", parents=[common])
     prep.add_argument("--mode", required=True, choices=("competition", "structural"))
     prep.add_argument("--data-dir", type=Path, default=Path("data"))
+    prep.add_argument("--seed", default="20261108")
+    prep.add_argument(
+        "--package-when-verified",
+        action="store_true",
+        help="write a zip only after all three official verifiers pass",
+    )
     prep.set_defaults(func=_prepare)
 
     sub.add_parser("check-data", parents=[common]).set_defaults(func=_check)
@@ -45,6 +52,11 @@ def main(argv: list[str] | None = None) -> int:
     adapt.set_defaults(func=_adapt)
 
     sub.add_parser("verify", parents=[common]).set_defaults(func=_verify)
+    one = sub.add_parser("verify-official", parents=[common])
+    one.add_argument("--task", required=True)
+    one.add_argument("--seed", default=None)
+    one.add_argument("--timeout", type=int, default=None)
+    one.set_defaults(func=_verify_one)
     cost_cmd = sub.add_parser("cost", parents=[common])
     cost_cmd.add_argument(
         "--aggregate",
@@ -67,7 +79,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _prepare(args: argparse.Namespace) -> dict:
-    return prepare_run(args.repo_root, args.runs_root, args.mode, args.data_dir)
+    return prepare_run(
+        args.repo_root,
+        args.runs_root,
+        args.mode,
+        args.data_dir,
+        seed=args.seed,
+        package_when_verified=args.package_when_verified,
+    )
 
 
 def _check(args: argparse.Namespace) -> dict:
@@ -80,6 +99,16 @@ def _adapt(args: argparse.Namespace) -> dict:
 
 def _verify(args: argparse.Namespace) -> dict:
     return verify(args.repo_root, args.runs_root)
+
+
+def _verify_one(args: argparse.Namespace) -> dict:
+    return verify_official(
+        args.repo_root,
+        args.runs_root,
+        args.task,
+        seed=args.seed,
+        timeout_s=args.timeout,
+    )
 
 
 def _cost(args: argparse.Namespace) -> dict:

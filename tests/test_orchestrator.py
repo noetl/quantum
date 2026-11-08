@@ -73,7 +73,7 @@ class CompetitionModeTests(unittest.TestCase):
             self.assertIsNone(provenance["leaderboard_score"])
             self.assertEqual(
                 provenance["spec"]["main_sha"],
-                "0b3915b38fb2de7897b735995b7be33fde617c63",
+                "d47053659fed3b110eb057f58d048ac50bf9ba7d",
             )
             self.assertFalse(any((ROOT / "tasks").rglob("*.kmb")))
             self.assertFalse(any((ROOT / "tasks").rglob("*.kmx")))
@@ -112,7 +112,7 @@ class CompetitionModeTests(unittest.TestCase):
             self.assertGreater(artifact["measurement"]["toffoli_like"], 0)
             self.assertFalse((ROOT / "tasks" / "invsqrt" / "invsqrt.kmx").exists())
 
-    def test_successful_hook_is_not_competition_verification(self) -> None:
+    def test_generic_hook_does_not_count_as_the_official_script(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data = root / "data"
@@ -120,9 +120,6 @@ class CompetitionModeTests(unittest.TestCase):
             hook.parent.mkdir(parents=True)
             hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             hook.chmod(hook.stat().st_mode | stat.S_IEXEC)
-            sample = data / "sample_submission"
-            sample.mkdir()
-            (sample / "invsqrt.kmx").write_text("X q0\n", encoding="utf-8")
             runs = root / "runs"
             _run(
                 [
@@ -137,19 +134,22 @@ class CompetitionModeTests(unittest.TestCase):
                     str(data),
                 ]
             )
-            _run(["adapt", "--task", "invsqrt", "--repo-root", str(ROOT), "--runs-root", str(runs)])
-            _run(["adapt", "--task", "dqi", "--repo-root", str(ROOT), "--runs-root", str(runs)])
-            _run(
-                ["adapt", "--task", "dfthcsos", "--repo-root", str(ROOT), "--runs-root", str(runs)]
+            verified = _run(
+                [
+                    "verify-official",
+                    "--task",
+                    "invsqrt",
+                    "--repo-root",
+                    str(ROOT),
+                    "--runs-root",
+                    str(runs),
+                    "--timeout",
+                    "5",
+                ]
             )
-            verified = _run(["verify", "--repo-root", str(ROOT), "--runs-root", str(runs)])
-            inv = next(item for item in verified["tasks"] if item["task"] == "invsqrt")
-            self.assertTrue(inv["hook_ran"])
-            self.assertEqual(inv["hook_exit_code"], 0)
-            self.assertFalse(inv["competition_verified"])
-            self.assertFalse(inv["official_entrypoint_confirmed"])
-            packaged = _run(["package", "--repo-root", str(ROOT), "--runs-root", str(runs)])
-            self.assertFalse(packaged["zip_written"])
+            self.assertEqual(verified["status"], "blocked")
+            self.assertFalse(verified["competition_verified"])
+            self.assertIn("verify_submission_invsqrt.py", verified["reason"])
 
 
 class StructuralModeTests(unittest.TestCase):
@@ -237,12 +237,14 @@ class PlaybookShapeTests(unittest.TestCase):
         self.assertEqual(
             [step["step"] for step in steps],
             [
-                "prepare",
+                "start",
                 "check_data",
                 "adapt_invsqrt",
                 "adapt_dqi",
                 "adapt_dfthcsos",
-                "verify",
+                "verify_invsqrt",
+                "verify_dqi",
+                "verify_dfthcsos",
                 "cost",
                 "package",
                 "record",

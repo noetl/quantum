@@ -1,11 +1,11 @@
-# VQCC baseline on the NoETL 5.3.2 local runtime.
-#
-# Local execution supports kind: shell with cmds, and chains steps with
-# next: [{step: ...}]. kind: python is not executed by this runtime.
-# Python and kickmix are invoked from those shell commands.
+# VQCC baseline. Validated against the live DSL at https://noetl.ai/api/dsl/validate
+# (server 3.153.0, noetl/server@5cf0712). The published local CLI that executes
+# this file in CI is noetl 5.3.2, which runs kind: shell / cmds and does not
+# execute kind: python. The server grammar accepts both shell and python.
+# A workflow must contain a step named start.
 #
 # Spec: specs/001-noetl-pipeline/spec.md at main
-# 0b3915b38fb2de7897b735995b7be33fde617c63
+# d47053659fed3b110eb057f58d048ac50bf9ba7d
 # Issues: https://github.com/noetl/quantum/issues/2 through /9
 #
 # Default workload mode is competition: no circuit bytes are written when
@@ -22,8 +22,9 @@ workload:
   data_dir: data
   runs_root: runs
   repo_root: "."
+  seed: "20261108"
 workflow:
-  - step: prepare
+  - step: start
     desc: Create a git-ignored run directory and record the spec SHA.
     tool:
       kind: shell
@@ -34,6 +35,7 @@ workflow:
           --data-dir "{{ workload.data_dir }}"
           --runs-root "{{ workload.runs_root }}"
           --repo-root "{{ workload.repo_root }}"
+          --seed "{{ workload.seed }}"
     next:
       - step: check_data
 
@@ -86,15 +88,45 @@ workflow:
           --runs-root "{{ workload.runs_root }}"
           --repo-root "{{ workload.repo_root }}"
     next:
-      - step: verify
+      - step: verify_invsqrt
 
-  - step: verify
-    desc: Look for competition verifiers. Do not substitute a fixed test set.
+  - step: verify_invsqrt
+    desc: Official invsqrt verifier. Missing scripts block; they do not pass.
     tool:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify-official
+          --task invsqrt
+          --seed "{{ workload.seed }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: verify_dqi
+
+  - step: verify_dqi
+    desc: Official dqi verifier, after invsqrt. The sample circuit is large.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify-official
+          --task dqi
+          --seed "{{ workload.seed }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: verify_dfthcsos
+
+  - step: verify_dfthcsos
+    desc: Official dfthcsos verifier. No extra flags that weaken the check.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify-official
+          --task dfthcsos
+          --seed "{{ workload.seed }}"
           --runs-root "{{ workload.runs_root }}"
           --repo-root "{{ workload.repo_root }}"
     next:
