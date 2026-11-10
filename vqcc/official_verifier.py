@@ -12,6 +12,7 @@ marked with ``.vqcc-fixture`` cannot set ``competition_verified``.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
@@ -67,6 +68,8 @@ DEFAULT_TIMEOUT_S = {
 }
 
 # One unambiguous line only. Multiple hits are not treated as a cost.
+# Official scripts print a JSON object, not this line. The line remains a
+# non-authoritative fallback for stubs that echo "cost:" or "score:".
 _COST_LINE = re.compile(
     r"(?im)^[ \t]*(?:raw[ _-]?)?(?:score|cost)[ \t]*[:=][ \t]*"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)[ \t]*$"
@@ -168,6 +171,12 @@ def run_official_task(
         "weakened_flags": False,
         "leaderboard_score": None,
         "aggregate_score": None,
+        "parsed_cost": None,
+        "cost_parse": None,
+        "cost_authoritative": False,
+        "verifier_status": None,
+        "score_source": None,
+        "score_inputs": {},
         "executed_by_this_repository_on_the_kaggle_dataset": False,
         "external_reference_note": EXTERNAL_REFERENCE_NOTE,
     }
@@ -229,10 +238,12 @@ def run_official_task(
     report["duration_seconds"] = round(duration, 3)
     report["exit_code"] = exit_code
     report["timed_out"] = timed_out
-    parsed, parse_status = _parse_cost(stdout or "")
-    report["parsed_cost"] = parsed
-    report["cost_parse"] = parse_status
-    report["cost_authoritative"] = False
+    parsed = parse_verifier_stdout(stdout or "")
+    report["parsed_cost"] = parsed["parsed_cost"]
+    report["cost_parse"] = parsed["cost_parse"]
+    report["verifier_status"] = parsed["verifier_status"]
+    report["score_source"] = parsed["score_source"]
+    report["score_inputs"] = parsed["score_inputs"]
     if log_dir is not None:
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / f"{task}.stdout.txt").write_text(stdout or "", encoding="utf-8")
@@ -243,14 +254,28 @@ def run_official_task(
     report["evidence_class"] = "fixture" if fixture else _evidence_class(root)
     exit_ok = exit_code == 0 and not timed_out
     report["official_exit_pass"] = exit_ok
+    json_rejected = parsed["cost_parse"] == "json_not_pass"
     # Fixture trees exist so tests can check argv without claiming a dataset pass.
-    report["competition_verified"] = bool(exit_ok and not fixture)
+    # A JSON status other than PASS is a verifier failure even if the process
+    # exited 0. A missing JSON document does not veto an exit-0 stub.
+    report["competition_verified"] = bool(exit_ok and not fixture and not json_rejected)
+    # A JSON score is the verifier's own task cost (spec FR-004). A bare
+    # cost:/score: line is not that document, and a fixture is not the dataset.
+    report["cost_authoritative"] = bool(
+        exit_ok and not fixture and parsed["cost_parse"] == "json_score"
+    )
     if timed_out:
         report["status"] = "timeout"
         report["reason"] = f"verifier exceeded {timeout}s and was killed"
     elif not exit_ok:
         report["status"] = "fail"
         report["reason"] = f"official verifier exited {exit_code}"
+    elif json_rejected:
+        report["status"] = "fail"
+        report["reason"] = (
+            "official verifier JSON status is "
+            f"{parsed['verifier_status']}; the process exited {exit_code}"
+        )
     elif fixture:
         report["status"] = "fixture_exit_ok"
         report["reason"] = (
@@ -259,10 +284,18 @@ def run_official_task(
         )
     else:
         report["status"] = "pass"
-        report["reason"] = (
-            "The official script exited 0. This is not an aggregate leaderboard "
-            "score. Parsed cost is not treated as authoritative."
-        )
+        if report["cost_authoritative"]:
+            report["reason"] = (
+                "The official script exited 0 and stdout JSON status is PASS. "
+                "parsed_cost is that object's score field (FR-004). "
+                "leaderboard_score stays null (FR-008, FR-009, FR-016)."
+            )
+        else:
+            report["reason"] = (
+                "The official script exited 0. This is not an aggregate "
+                "leaderboard score. The stdout is not one PASS JSON score, "
+                "so the task cost is not authoritative."
+            )
     return report
 
 
@@ -297,7 +330,146 @@ def _launch_environment(root: Path, script: Path) -> tuple[Path, dict[str, str],
     return cwd, env, source
 
 
-def _parse_cost(stdout: str) -> tuple[float | None, str]:
+def parse_verifier_stdout(stdout: str) -> dict:
+    """Read one verifier stdout.
+
+    The official scripts write a JSON object whose ``score`` is the task cost
+    and whose ``status`` is ``PASS`` or ``FAIL``. That is the document the
+    invsqrt verifier redirects to ``result.json``, and the same ``status`` /
+    ``score`` pair is what a full dqi run prints. A bare ``cost:`` or
+    ``score:`` line is kept for stubs and is never authoritative.
+
+    Several top-level objects that each carry ``score`` are ambiguous. Nested
+    objects are not separate hits. A JSON array is not searched for an inner
+    score.
+    """
+
+    objects = _top_level_objects(stdout or "")
+    scored = [obj for obj in objects if isinstance(obj, dict) and "score" in obj]
+    if len(scored) > 1:
+        return _parse_result(None, "ambiguous", None, None, {})
+    if len(scored) == 1:
+        return _from_score_object(scored[0])
+    if objects:
+        return _parse_result(
+            None,
+            "json_missing_score",
+            _status_of(objects[0]),
+            None,
+            _scalar_inputs(objects[0]),
+        )
+    parsed, status = _parse_cost_line(stdout or "")
+    if status == "one_line":
+        return _parse_result(parsed, "one_line", None, "text_line", {})
+    if status == "ambiguous":
+        return _parse_result(None, "ambiguous", None, None, {})
+    return _parse_result(None, "unparsed", None, None, {})
+
+
+def _from_score_object(obj: dict) -> dict:
+    status = _status_of(obj)
+    score = _as_score(obj.get("score"))
+    inputs = _scalar_inputs(obj)
+    if status is None:
+        kind = "json_missing_status" if score is not None else "json_missing_score"
+        return _parse_result(score, kind, None, "json.score", inputs)
+    if status != "PASS":
+        return _parse_result(score, "json_not_pass", status, "json.score", inputs)
+    if score is None or score <= 0.0:
+        return _parse_result(score, "json_invalid_score", status, "json.score", inputs)
+    return _parse_result(score, "json_score", status, "json.score", inputs)
+
+
+def _parse_result(
+    parsed_cost: float | None,
+    cost_parse: str,
+    verifier_status: str | None,
+    score_source: str | None,
+    score_inputs: dict,
+) -> dict:
+    return {
+        "parsed_cost": parsed_cost,
+        "cost_parse": cost_parse,
+        "verifier_status": verifier_status,
+        "score_source": score_source,
+        "score_inputs": score_inputs,
+    }
+
+
+def _status_of(obj: dict) -> str | None:
+    status = obj.get("status")
+    if not isinstance(status, str):
+        return None
+    text = status.strip().upper()
+    return text or None
+
+
+def _as_score(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _scalar_inputs(obj: dict) -> dict:
+    """Keep JSON scalars so a cost can name the verifier's own inputs.
+
+    Nested maps such as per-shot operation counts are omitted. They are not
+    formula inputs, and a dqi run's count map is large.
+    """
+
+    inputs: dict = {}
+    for key, value in obj.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, str):
+            if len(value) > 256:
+                continue
+            inputs[key] = value
+        elif isinstance(value, bool) or value is None:
+            inputs[key] = value
+        elif isinstance(value, (int, float)) and math.isfinite(float(value)):
+            inputs[key] = value
+        if len(inputs) >= 40:
+            break
+    return inputs
+
+
+def _top_level_objects(text: str) -> list[dict]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        value = None
+    else:
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            return []
+    decoder = json.JSONDecoder()
+    found: list[dict] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        start = text.find("{", index)
+        if start < 0:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        if isinstance(obj, dict):
+            found.append(obj)
+        index = max(end, start + 1)
+    return found
+
+
+def _parse_cost_line(stdout: str) -> tuple[float | None, str]:
     matches = _COST_LINE.findall(stdout)
     if len(matches) == 1:
         return float(matches[0]), "one_line"

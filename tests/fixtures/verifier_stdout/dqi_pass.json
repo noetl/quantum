@@ -1,0 +1,8 @@
+{
+  "status": "PASS",
+  "score": 24439466758900.453,
+  "shot_operation_counts": {
+    "CCX": 1,
+    "CX": 2
+  }
+}
