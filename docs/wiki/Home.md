@@ -3,7 +3,7 @@
 Home for the NoETL entry in
 [Google Quantum AI — Verifiable Quantum Circuit Compilation](https://www.kaggle.com/competitions/google-verifiable-quantum-circuit-compilation).
 
-This wiki matches the implementation on branch `cursor/vqcc-verifier-score-parse-7255`.
+This wiki matches this tree: verifier JSON score parsing, and the default local CLI run (`tests/test_playbook_cli.py`, eleven steps).
 The spec contract is `specs/001-noetl-pipeline/spec.md` at main
 `0b3915b38fb2de7897b735995b7be33fde617c63`.
 Issues: [2](https://github.com/noetl/quantum/issues/2) through
@@ -11,7 +11,7 @@ Issues: [2](https://github.com/noetl/quantum/issues/2) through
 
 ## What runs today
 
-`noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` on the PyPI CLI **noetl 5.3.2**, after the document passes `POST https://noetl.ai/api/dsl/validate`. Revalidated 2026-11-10 on server **3.156.0** (`valid: true`, findings empty). Schema digest `sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6` is unchanged from the earlier server 3.153.0 / `noetl/server@5cf0712` snapshot. The workflow's first step is named `start`.
+`noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` on the PyPI CLI **noetl 5.3.2**, after the document passes `POST https://noetl.ai/api/dsl/validate`. Rechecked 2026-11-10 on server **3.156.1** (`valid: true`, findings empty). Schema digest `sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6` is unchanged from the 3.156.0 and 3.153.0 / `noetl/server@5cf0712` snapshots. The workflow's first step is named `start`.
 
 With no competition data the playbook:
 

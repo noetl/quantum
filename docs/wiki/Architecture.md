@@ -22,7 +22,8 @@ routes with `next: [{step: name}]`. `kind: python` prints "not supported" and
 is not used. Shell commands call `python3 -m vqcc.pipeline`.
 
 `import noetl` then `noetl.run(path, variables=...)` calls that same local
-engine. The tests use it.
+engine. `tests/test_playbook_e2e.py` uses it with explicit variables.
+`tests/test_playbook_cli.py` shells the operator command with no `--set`.
 
 ## Steps
 
@@ -32,7 +33,7 @@ engine. The tests use it.
 2. `check_data` — report whether `data/verifiers` exists.
 3. `adapt_invsqrt`, `adapt_dqi`, `adapt_dfthcsos` — import a baseline file if
    it is already on disk, or write a structural fixture when `mode=structural`.
-4. `verify` — search for verifiers. Do not invent a pass.
+4. `verify_invsqrt`, `verify_dqi`, `verify_dfthcsos` — official scripts when they exist. Absence blocks. Do not invent a pass.
 5. `cost` — copy an authoritative verifier JSON `score` when the verify step stored one. Otherwise price a kickmix measurement when that formula's inputs exist. `leaderboard_score` stays null.
 6. `package` — refuse a zip while any task has `competition_verified: false`.
 7. `record` — write `provenance.json`. Do not append a guessed experiments row.

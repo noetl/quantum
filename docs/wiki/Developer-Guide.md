@@ -10,9 +10,9 @@
 | `vqcc/formulas.py` | Hub and paper formulas. Callers choose the source. |
 | `vqcc/packaging.py` | Zip layout checks. |
 | `vqcc/kickmix` usage | Inside the orchestrator, not a second service. |
-| `tests/` | Unit tests plus `tests/test_playbook_e2e.py`, which calls `noetl.run`. |
+| `tests/` | Unit tests, `tests/test_playbook_e2e.py` (`noetl.run`), and `tests/test_playbook_cli.py` (the `noetl` CLI). |
 | `requirements-baseline.txt` | `noetl==5.3.2`, `kickmix==1.0.0`, `PyYAML==6.0.2`. |
-| `.github/workflows/ci.yml` | Installs that file and runs unittest. |
+| `.github/workflows/ci.yml` | Installs that file, runs unittest, and runs the literal CLI in job `cli-default`. |
 
 ## Tests
 
@@ -21,12 +21,21 @@ python3 -m pip install -r requirements-baseline.txt
 python3 -m unittest discover -s tests -t .
 ```
 
-27 tests ran in the implementation environment (Python 3.12). One test skips
-when kickmix is installed, because it only covers the missing-module path.
-`tests/test_playbook_e2e.py` skips if `noetl` 5.3.x cannot be imported.
+With `requirements-baseline.txt` installed (noetl 5.3.2 and kickmix 1.0.0),
+one test skips:
+`tests.test_orchestrator.StructuralModeTests.test_structural_mode_fails_closed_without_kickmix`.
+It covers the missing-module path and does not run when kickmix is installed.
+That was the single skip in the PR #11 CI run (34 tests, `OK (skipped=1)` on
+workflow run 42521609515). The log did not name it; the installed baseline
+deps make it the only skip. `tests/test_playbook_e2e.py` skips if `noetl`
+5.3.x cannot be imported. `tests/test_playbook_cli.py` skips only when the
+`noetl` executable is not on `PATH`.
 
-The end-to-end tests call `noetl.run(...)`, which is the local engine, not a
-reimplementation. They use a temporary `runs_root` and `data_dir`.
+`tests/test_playbook_e2e.py` calls `noetl.run(...)` with a temporary
+`runs_root` and `data_dir`. `tests/test_playbook_cli.py` does not. It shells
+`noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` from the
+repository root and leaves the playbook defaults (`mode`, `data_dir`,
+`runs_root`, `repo_root`, `seed`) unset on the command line.
 
 Distinguish the checks:
 
@@ -35,7 +44,8 @@ Distinguish the checks:
 | Formula unit tests | Arithmetic of the hub rendering and paper equation 43 examples. Not a submission. |
 | Packaging unit tests | Zip layout on empty stand-in bytes. Not a verifier pass. |
 | Orchestrator tests | Absent data writes no circuit. An imported file is hashed. A hook that exits 0 does not set `competition_verified`. |
-| `noetl.run` tests | The playbook's nine steps execute and the record step matches the provenance file. |
+| `noetl.run` tests | The playbook's eleven steps execute and the record step matches the provenance file. |
+| `noetl` CLI test | The same eleven steps, from the literal CLI with default variables and no competition data. `leaderboard_score` is null, verification is `blocked`, and no zip is written. |
 | kickmix measurement | `operation_statistics` on a circuit this process built or loaded. Not the Kaggle verifier. |
 
 ## Adding a real verifier

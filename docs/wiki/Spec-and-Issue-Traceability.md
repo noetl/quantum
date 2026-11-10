@@ -13,7 +13,7 @@ playbooks orchestrate.
 
 | Issue | Spec | Baseline status |
 | --- | --- | --- |
-| [#2](https://github.com/noetl/quantum/issues/2) playbook runtime | User story 5, FR-016, SC-001, SC-005 | Done for the local runtime. `noetl.run` executes all nine steps. Distributed server execution is not claimed. |
+| [#2](https://github.com/noetl/quantum/issues/2) playbook runtime | User story 5, FR-016, SC-001, SC-005 | Literal CLI `noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` from the repo root, default variables, no competition data: eleven steps, `leaderboard_score` null, verification `blocked`, no zip. Covered by `tests/test_playbook_cli.py` and CI job `cli-default`. Distributed server execution is not claimed. |
 | [#3](https://github.com/noetl/quantum/issues/3) task adapters | User stories 1–2, FR-001, FR-002, FR-003 | Import and structural fixtures work. Competition-quality generation does not. `tasks/*/generate.py` still refuses to write a file. |
 | [#4](https://github.com/noetl/quantum/issues/4) verifier | FR-010, FR-011, user story 1 | Adapter calls the three official scripts with `--seed`. A generic hook does not pass. Full dataset execution is the Kaggle notebook, not this cloud VM. |
 | [#5](https://github.com/noetl/quantum/issues/5) cost | FR-004–FR-009, FR-018, SC-002 | A PASS JSON `score` from the official script is the authoritative task cost (FR-004) and names that source plus the JSON scalars. Kickmix invsqrt pricing remains the fallback. dqi `R`, dfthcsos `λ_eff`, and FR-008 stay unresolved. The hub mean is opt-in, unconfirmed, and is not `leaderboard_score` (FR-009, FR-016). |

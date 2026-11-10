@@ -24,6 +24,10 @@ noetl run playbooks/vqcc_pipeline.yaml --runtime local --json
 Expect `status: ok`, eleven executed steps, and `leaderboard_score: null` in
 `final_result`.
 
+`tests/test_playbook_cli.py` runs this command from the repo root with no
+`--set` and no competition data. It skips only when the `noetl` CLI is absent.
+Verification is `blocked`, and no submission zip is written.
+
 ## Data acquisition
 
 The dataset is about 1 GB and license-restricted. It is not in git.
