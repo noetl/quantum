@@ -5,7 +5,7 @@ the packaging gate. It is not an optimizer.
 
 ## Done in the baseline
 
-- NoETL 5.3.2 local playbook with nine shell steps and provenance.
+- NoETL 5.3.2 local playbook with eleven shell steps and provenance. The literal CLI command is `tests/test_playbook_cli.py` and CI job `cli-default`.
 - Import of an on-disk baseline by path and SHA-256, without copying it into git.
 - Structural kickmix fixtures that cannot be marked verified.
 - Invsqrt cost from kickmix counts, source labeled, leaderboard left null.
