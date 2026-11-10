@@ -63,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="request the hub aggregate; it stays unconfirmed and is not an LB score",
     )
+    cost_cmd.add_argument("--ref-invsqrt", type=float, default=None)
+    cost_cmd.add_argument("--ref-dqi", type=float, default=None)
+    cost_cmd.add_argument("--ref-dfthcsos", type=float, default=None)
     cost_cmd.set_defaults(func=_cost)
     sub.add_parser("package", parents=[common]).set_defaults(func=_package)
     sub.add_parser("record", parents=[common]).set_defaults(func=_record)
@@ -112,7 +115,17 @@ def _verify_one(args: argparse.Namespace) -> dict:
 
 
 def _cost(args: argparse.Namespace) -> dict:
-    return cost(args.repo_root, args.runs_root, aggregate=args.aggregate)
+    refcosts = {
+        task: getattr(args, f"ref_{task}")
+        for task in ("invsqrt", "dqi", "dfthcsos")
+        if getattr(args, f"ref_{task}") is not None
+    }
+    return cost(
+        args.repo_root,
+        args.runs_root,
+        aggregate=args.aggregate,
+        refcosts=refcosts or None,
+    )
 
 
 def _package(args: argparse.Namespace) -> dict:

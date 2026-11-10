@@ -21,10 +21,11 @@ the packaging gate. It is not an optimizer.
 2. [Issue 4](https://github.com/noetl/quantum/issues/4). Call that entry point.
    Set `competition_verified` only from it. Keep salt notes: a local salt is
    not the leaderboard salt.
-3. [Issue 5](https://github.com/noetl/quantum/issues/5). Diff
-   `verifiers/` metric code against FR-006, FR-007, and FR-008. Close the
-   spec markers only when that code agrees. Until then dqi `R(ε)` and
-   dfthcsos `λ_eff` stay unapplied.
+3. [Issue 5](https://github.com/noetl/quantum/issues/5). A PASS JSON `score`
+   from the official script is now the authoritative task cost (FR-004).
+   Diff `verifiers/` metric code against FR-006, FR-007, and FR-008 before
+   closing those markers. Until then dqi `R(ε)` and dfthcsos `λ_eff` stay
+   unapplied, and the hub geometric mean is not `leaderboard_score`.
 4. [Issue 7](https://github.com/noetl/quantum/issues/7). After verification
    can pass, let the package step call `vqcc.packaging` on the accepted files.
 5. [Issue 3](https://github.com/noetl/quantum/issues/3) and

@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from vqcc.formulas import HUB_AGGREGATE_GAP  # noqa: E402
 from vqcc.official_verifier import (  # noqa: E402
     REFERENCE_SEED,
     discover_dataset_root,
@@ -61,11 +62,32 @@ def main(argv: list[str] | None = None) -> int:
             log_dir=args.log_dir,
         )
         results.append(report)
-        print(json.dumps({"task": task, "status": report["status"], "exit_code": report.get("exit_code"), "parsed_cost": report.get("parsed_cost"), "competition_verified": report["competition_verified"], "leaderboard_score": None}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "task": task,
+                    "status": report["status"],
+                    "exit_code": report.get("exit_code"),
+                    "cost_parse": report.get("cost_parse"),
+                    "parsed_cost": report.get("parsed_cost"),
+                    "cost_authoritative": report.get("cost_authoritative"),
+                    "verifier_status": report.get("verifier_status"),
+                    "competition_verified": report["competition_verified"],
+                    "leaderboard_score": None,
+                },
+                indent=2,
+            )
+        )
     summary = {
         "leaderboard_score": None,
         "aggregate_score": None,
+        "score_gap": HUB_AGGREGATE_GAP,
         "all_competition_verified": all(item["competition_verified"] for item in results),
+        "authoritative_costs": {
+            item["task"]: item.get("parsed_cost")
+            for item in results
+            if item.get("cost_authoritative")
+        },
         "tasks": results,
     }
     (args.log_dir / "run-metadata.json").write_text(

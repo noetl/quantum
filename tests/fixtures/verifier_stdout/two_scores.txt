@@ -1,0 +1,2 @@
+{"status": "PASS", "score": 1.0}
+{"status": "PASS", "score": 2.0}
