@@ -1,0 +1,236 @@
+# Per-task optimization after a verified baseline.
+# Validated 2026-11-10: POST https://noetl.ai/api/dsl/validate
+# server 3.156.1, HTTP 200, valid true, findings empty.
+# Schema digest sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6
+# is unchanged from the 3.156.0 and 3.153.0 snapshots.
+# NoETL 5.3.2 local runtime runs kind: shell / cmds and requires a step named start.
+#
+# Spec: specs/001-noetl-pipeline/spec.md
+#   User story 2 (acceptance scenarios 1 and 2)
+#   FR-001, FR-003, FR-004, FR-010, FR-011
+#   FR-006, FR-007, and FR-008 are not resolved here.
+#
+# Each optimize step reads only that task's retained circuit, writes a candidate
+# under runs/, and replaces the retained artifact only when the official verifier
+# accepts it and the JSON score is strictly lower. This playbook does not arm
+# submission packaging. Nothing in this file submits to Kaggle.
+apiVersion: noetl.io/v2
+kind: Playbook
+metadata:
+  name: vqcc_optimize
+  path: playbooks/vqcc_optimize
+workload:
+  mode: competition
+  data_dir: data
+  runs_root: runs
+  repo_root: "."
+  seed: "20261108"
+  # Cap for one optimize step (baseline already verified, plus at most one
+  # candidate verification). Not a target runtime.
+  time_budget_s: "14400"
+  # dqi's sample circuit is about 886 MB. The rewriter maps the file; it does
+  # not build a kickmix.Circuit. Files above this size are left untouched.
+  memory_budget_bytes: "2147483648"
+  window: "32"
+  max_candidates: "1"
+workflow:
+  - step: start
+    desc: Create a git-ignored run directory. Do not arm submission packaging.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline prepare
+          --mode "{{ workload.mode }}"
+          --data-dir "{{ workload.data_dir }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+          --seed "{{ workload.seed }}"
+    next:
+      - step: check_data
+
+  - step: check_data
+    desc: Report whether the official verifier scripts are on disk.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline check-data
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: adapt_invsqrt
+
+  - step: adapt_invsqrt
+    desc: Import an invsqrt baseline by path if one exists, or write nothing.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline adapt
+          --task invsqrt
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: adapt_dqi
+
+  - step: adapt_dqi
+    desc: Import a dqi baseline by path if one exists, or write nothing.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline adapt
+          --task dqi
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: adapt_dfthcsos
+
+  - step: adapt_dfthcsos
+    desc: Import a dfthcsos directory if one exists, or write nothing.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline adapt
+          --task dfthcsos
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: verify_invsqrt
+
+  - step: verify_invsqrt
+    desc: Official invsqrt verifier on the imported baseline.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify-official
+          --task invsqrt
+          --seed "{{ workload.seed }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: verify_dqi
+
+  - step: verify_dqi
+    desc: Official dqi verifier on the imported baseline.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify-official
+          --task dqi
+          --seed "{{ workload.seed }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: verify_dfthcsos
+
+  - step: verify_dfthcsos
+    desc: Official dfthcsos verifier on the imported baseline.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify-official
+          --task dfthcsos
+          --seed "{{ workload.seed }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: optimize_invsqrt
+
+  - step: optimize_invsqrt
+    desc: >-
+      Peephole invsqrt only. Keep a candidate only when the verifier accepts
+      it and the JSON score is strictly lower. Do not touch dqi or dfthcsos.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline optimize
+          --task invsqrt
+          --time-budget-s "{{ workload.time_budget_s }}"
+          --memory-budget-bytes "{{ workload.memory_budget_bytes }}"
+          --window "{{ workload.window }}"
+          --max-candidates "{{ workload.max_candidates }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: optimize_dqi
+
+  - step: optimize_dqi
+    desc: >-
+      Peephole dqi only, streaming the kmb. A rejected proposal does not
+      replace the retained dqi artifact.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline optimize
+          --task dqi
+          --time-budget-s "{{ workload.time_budget_s }}"
+          --memory-budget-bytes "{{ workload.memory_budget_bytes }}"
+          --window "{{ workload.window }}"
+          --max-candidates "{{ workload.max_candidates }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: optimize_dfthcsos
+
+  - step: optimize_dfthcsos
+    desc: >-
+      Peephole dfthcsos angle circuits only. submission.npz is copied, not
+      recomputed. Keep the directory only if the verifier score drops.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline optimize
+          --task dfthcsos
+          --time-budget-s "{{ workload.time_budget_s }}"
+          --memory-budget-bytes "{{ workload.memory_budget_bytes }}"
+          --window "{{ workload.window }}"
+          --max-candidates "{{ workload.max_candidates }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: cost
+
+  - step: cost
+    desc: >-
+      Copy an authoritative verifier JSON score when one was stored.
+      Leave leaderboard_score null (FR-008, FR-009, FR-016).
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline cost
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: package
+
+  - step: package
+    desc: Do not write a submission zip unless packaging was explicitly armed.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline package
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: record
+
+  - step: record
+    desc: Write provenance.json. Do not append an invented experiments row.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline record
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"

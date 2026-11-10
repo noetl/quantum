@@ -130,6 +130,45 @@ A blocked run with no dataset looks like:
 That is the expected result until the official verifier is available. It is
 not a pass.
 
+## Optimize
+
+After the dataset is mounted, the NoETL playbook runs baseline verification
+and then one peephole pass per task. It does not submit and it does not pass
+`--package-when-verified`.
+
+```bash
+noetl run playbooks/vqcc_optimize.yaml --runtime local --json \
+  --set data_dir=/kaggle/input/competitions/google-verifiable-quantum-circuit-compilation \
+  --set runs_root=/kaggle/working/runs \
+  --set repo_root="$PWD" \
+  --set seed=20261108
+```
+
+The same steps without the `noetl` binary, including a single task:
+
+```bash
+python3 kaggle/vqcc_optimize.py --task invsqrt --seed 20261108
+```
+
+`--time-budget-s` defaults to 14400 for one optimize step. `--memory-budget-bytes`
+defaults to 2147483648. `--window` defaults to 32. `--max-candidates` defaults
+to 1 and cannot be set above 3.
+
+What to check in `runs/<id>/provenance.json`:
+
+- `leaderboard_score` is null and `package.zip_written` is false.
+- `optimization.status` is `accepted` only when `retained_cost` is strictly
+  less than `baseline_cost` and that task's verifier JSON `status` is `PASS`.
+- `rejected` and `unchanged` leave `paths` on the previous artifact. A
+  rejected file under `runs/<id>/proposals/` is not the retained path.
+- With `--task invsqrt`, the dqi and dfthcsos sha256 values are unchanged.
+- The dataset mount is not modified. New bytes are under `runs/`.
+
+The reference costs from the private seed-20261108 run (lower is better) are
+external evidence in `vqcc/official_verifier.py`, not a result of this
+repository. An `unchanged` status on those circuits means the peephole found
+no Toffoli-like, T-like, or level-4-or-finer reduction inside the window.
+
 ## Package
 
 The playbook refuses to write a zip while verification is false.

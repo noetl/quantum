@@ -11,17 +11,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import shutil
 import subprocess
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from vqcc.kickmix_file import KickmixFormatError, OptimizeBudgetError
 from vqcc.official_verifier import (
+    DEFAULT_TIMEOUT_S,
     REFERENCE_SEED,
     discover_dataset_root,
     run_official_task,
 )
+from vqcc.optimize import optimize_artifact
 from vqcc.formulas import (
     E_GAP_FLOOR_HA,
     FROBENIUS_TOLERANCE_HA,
@@ -262,19 +268,257 @@ def verify_official(
     task_state["competition_verified"] = bool(report.get("competition_verified"))
     task_state["leaderboard_score"] = None
     state["tasks"][task] = task_state
-    verified_flags = [
-        bool((state["tasks"].get(name) or {}).get("competition_verified")) for name in TASKS
-    ]
-    state["verification"] = {
-        "status": "pass" if all(verified_flags) else "blocked",
-        "competition_verified": all(verified_flags),
-        "mock": False,
-        "tasks": [state["tasks"].get(name, {}).get("verification") for name in TASKS],
-        "leaderboard_score": None,
-        "aggregate_score": None,
-    }
+    _refresh_verification_summary(state)
     _save(run_dir, state)
     return _step("verify_official", state, **report)
+
+
+def optimize_task(
+    repo_root: Path,
+    runs_root: Path,
+    task: str,
+    *,
+    time_budget_s: float | None = None,
+    memory_budget_bytes: int = 2 * 1024**3,
+    window: int = 32,
+    max_candidates: int = 1,
+    verify_timeout_s: int | None = None,
+) -> dict:
+    """Propose one cheaper circuit for ``task`` and keep it only if the verifier agrees.
+
+    User story 2 and FR-011. A rejected proposal does not replace the retained
+    artifact. Other tasks' records and files are not written. FR-003: a pass
+    that builds nothing leaves no circuit file.
+    """
+
+    if task not in TASKS:
+        raise PipelineError(f"unknown task {task}")
+    if max_candidates < 0 or max_candidates > 3:
+        raise PipelineError("max_candidates must be from 0 to 3")
+    if window < 1 or window > 4096:
+        raise PipelineError("window must be from 1 to 4096")
+    if memory_budget_bytes < 1:
+        raise PipelineError("memory budget must be positive")
+    if time_budget_s is not None and time_budget_s < 0:
+        raise PipelineError("time budget must be non-negative")
+
+    state, run_dir = _load(repo_root, runs_root)
+    budget = float(2 * DEFAULT_TIMEOUT_S[task] if time_budget_s is None else time_budget_s)
+    deadline = time.monotonic() + budget
+    summary = _optimize_header(
+        task,
+        budget=budget,
+        memory_budget_bytes=memory_budget_bytes,
+        window=window,
+        max_candidates=max_candidates,
+    )
+    if state["mode"] != "competition":
+        summary.update(
+            status="skipped",
+            circuit_written=False,
+            reason=(
+                "structural mode is not a verified baseline. "
+                "No candidate was written."
+            ),
+        )
+        _store_optimization(state, run_dir, task, summary)
+        return _step("optimize", state, **summary)
+
+    source = _task_circuit_path(state["tasks"].get(task) or {})
+    if source is None:
+        summary.update(
+            status="blocked",
+            circuit_written=False,
+            reason=(
+                f"No baseline circuit is on disk for {task}. "
+                "No candidate was written."
+            ),
+        )
+        _store_optimization(state, run_dir, task, summary)
+        return _step("optimize", state, **summary)
+
+    state, run_dir = _ensure_authoritative_baseline(
+        repo_root,
+        runs_root,
+        state,
+        run_dir,
+        task,
+        deadline,
+        verify_timeout_s,
+    )
+    verification = (state["tasks"].get(task) or {}).get("verification") or {}
+    if not verification.get("competition_verified") or not verification.get("cost_authoritative"):
+        out_of_time = time.monotonic() + 1 >= deadline
+        summary.update(
+            status="budget" if out_of_time else "blocked",
+            circuit_written=False,
+            baseline_verification_status=verification.get("status"),
+            reason=(
+                "Time budget exhausted before an authoritative baseline pass. "
+                "No candidate was written."
+                if out_of_time
+                else (
+                    "The baseline is not an authoritative verifier pass (FR-004, FR-011). "
+                    "No candidate was written."
+                )
+            ),
+        )
+        _store_optimization(state, run_dir, task, summary)
+        return _step("optimize", state, **summary)
+
+    baseline_cost = float(verification["parsed_cost"])
+    best_cost = baseline_cost
+    retained = source
+    attempts: list[dict] = []
+    written = 0
+    accepted = 0
+    if max_candidates == 0:
+        attempts.append(
+            {
+                "status": "skipped",
+                "reason": "max_candidates is 0. No candidate was written.",
+                "proposal_retained": False,
+            }
+        )
+    for index in range(max_candidates):
+        remaining = deadline - time.monotonic()
+        if remaining <= 1:
+            attempts.append(
+                {
+                    "status": "budget",
+                    "proposal_retained": False,
+                    "reason": "time budget exhausted. No further candidate was written.",
+                }
+            )
+            break
+        proposal = _proposal_path(run_dir, task, index, retained)
+        try:
+            rewrite = optimize_artifact(
+                str(retained),
+                str(proposal),
+                window=window,
+                memory_budget_bytes=memory_budget_bytes,
+                deadline=time.monotonic() + remaining,
+            )
+        except (KickmixFormatError, OptimizeBudgetError) as exc:
+            _delete_path(proposal)
+            attempts.append(
+                {
+                    "status": "not_rewritten",
+                    "proposal_retained": False,
+                    "reason": f"{exc} The previous artifact was kept.",
+                }
+            )
+            break
+        if not rewrite.wrote:
+            attempts.append(
+                {
+                    "status": "unchanged",
+                    "proposal_retained": False,
+                    "reason": rewrite.reason,
+                    "before": rewrite.before,
+                    "after": rewrite.after,
+                    "stats": rewrite.stats,
+                }
+            )
+            break
+        written += 1
+        remaining = deadline - time.monotonic()
+        if remaining <= 1:
+            _delete_path(proposal)
+            written -= 1
+            attempts.append(
+                {
+                    "status": "budget",
+                    "proposal_retained": False,
+                    "reason": (
+                        "time budget exhausted before the verifier. "
+                        "The proposal was deleted and the previous artifact was kept."
+                    ),
+                }
+            )
+            break
+        dataset = _dataset_for_verify(state)
+        if not dataset.get("found"):
+            _delete_path(proposal)
+            written -= 1
+            attempts.append(
+                {
+                    "status": "blocked",
+                    "proposal_retained": False,
+                    "reason": dataset.get("reason") or "official verifier scripts were not found",
+                }
+            )
+            break
+        timeout = _verify_timeout(task, remaining, verify_timeout_s)
+        vreport = run_official_task(
+            root=Path(dataset["root"]),
+            task=task,
+            artifact=proposal,
+            seed=state.get("seed") or REFERENCE_SEED,
+            timeout_s=timeout,
+            log_dir=run_dir / "official" / "proposals" / task,
+        )
+        kept = _score_improved(best_cost, vreport)
+        attempt = {
+            "proposal": str(proposal),
+            "proposal_retained": False,
+            "verifier_status": vreport.get("status"),
+            "competition_verified": bool(vreport.get("competition_verified")),
+            "cost_authoritative": bool(vreport.get("cost_authoritative")),
+            "parsed_cost": vreport.get("parsed_cost"),
+            "previous_cost": best_cost,
+            "before": rewrite.before,
+            "after": rewrite.after,
+            "stats": rewrite.stats,
+            "leaderboard_score": None,
+        }
+        if not kept:
+            attempt["status"] = "rejected"
+            attempt["reason"] = (
+                "The verifier did not accept this proposal with a strictly lower score. "
+                "The previous artifact remains the retained one (user story 2, FR-011)."
+            )
+            attempts.append(attempt)
+            break
+        _retain_candidate(state, task, proposal, vreport, rewrite)
+        attempt["status"] = "accepted"
+        attempt["proposal_retained"] = True
+        attempt["reason"] = (
+            "The verifier accepted this proposal and its score is lower. "
+            "It replaces the retained artifact for this task only."
+        )
+        attempts.append(attempt)
+        accepted += 1
+        written_cost = float(vreport["parsed_cost"])
+        best_cost = written_cost
+        retained = proposal
+        _save(run_dir, state)
+
+    if accepted:
+        status = "accepted"
+    elif any(item.get("status") == "rejected" for item in attempts):
+        status = "rejected"
+    elif any(item.get("status") == "budget" for item in attempts):
+        status = "budget"
+    elif any(item.get("status") == "blocked" for item in attempts):
+        status = "blocked"
+    elif any(item.get("status") == "not_rewritten" for item in attempts):
+        status = "not_rewritten"
+    else:
+        status = "unchanged"
+    summary.update(
+        status=status,
+        circuit_written=accepted > 0,
+        candidates_written=written,
+        candidates_retained=accepted,
+        baseline_cost=baseline_cost,
+        retained_cost=best_cost,
+        attempts=attempts,
+        reason=_optimize_reason(status),
+    )
+    _store_optimization(state, run_dir, task, summary)
+    return _step("optimize", state, **summary)
 
 
 def cost(
@@ -483,6 +727,7 @@ def record(repo_root: Path, runs_root: Path) -> dict:
                 "parsed_cost": (
                     ((state["tasks"].get(task) or {}).get("verification") or {}).get("parsed_cost")
                 ),
+                "optimization": (state["tasks"].get(task) or {}).get("optimization"),
             }
             for task in TASKS
         },
@@ -593,17 +838,204 @@ def _locate_dataset(data_dir: Path, repo_root: Path) -> dict:
     return primary
 
 
-def _candidate_artifact(state: dict, task: str) -> Path | None:
-    """Use an imported candidate when one was recorded. Otherwise the sample."""
+def _refresh_verification_summary(state: dict) -> None:
+    verified_flags = [
+        bool((state["tasks"].get(name) or {}).get("competition_verified")) for name in TASKS
+    ]
+    state["verification"] = {
+        "status": "pass" if all(verified_flags) else "blocked",
+        "competition_verified": all(verified_flags),
+        "mock": False,
+        "tasks": [state["tasks"].get(name, {}).get("verification") for name in TASKS],
+        "leaderboard_score": None,
+        "aggregate_score": None,
+    }
 
-    task_state = state["tasks"].get(task) or {}
-    if task_state.get("role") != "imported_baseline":
+
+def _optimize_header(
+    task: str,
+    *,
+    budget: float,
+    memory_budget_bytes: int,
+    window: int,
+    max_candidates: int,
+) -> dict:
+    return {
+        "task": task,
+        "leaderboard_score": None,
+        "lower_is_better": True,
+        "comparison": "official verifier JSON score, strict less-than",
+        "spec": (
+            "specs/001-noetl-pipeline/spec.md User story 2 "
+            "(acceptance scenarios 1 and 2), FR-001, FR-003, FR-004, FR-010, FR-011"
+        ),
+        "time_budget_s": budget,
+        "memory_budget_bytes": memory_budget_bytes,
+        "window": window,
+        "max_candidates": max_candidates,
+        "candidates_written": 0,
+        "candidates_retained": 0,
+    }
+
+
+def _store_optimization(state: dict, run_dir: Path, task: str, summary: dict) -> None:
+    task_state = state["tasks"].setdefault(
+        task,
+        {"role": "absent", "circuit_written": False, "competition_verified": False},
+    )
+    task_state["optimization"] = summary
+    task_state["leaderboard_score"] = None
+    state["tasks"][task] = task_state
+    _save(run_dir, state)
+
+
+def _ensure_authoritative_baseline(
+    repo_root: Path,
+    runs_root: Path,
+    state: dict,
+    run_dir: Path,
+    task: str,
+    deadline: float,
+    verify_timeout_s: int | None,
+) -> tuple[dict, Path]:
+    verification = (state["tasks"].get(task) or {}).get("verification") or {}
+    if verification.get("competition_verified") and verification.get("cost_authoritative"):
+        return state, run_dir
+    remaining = deadline - time.monotonic()
+    if remaining <= 1:
+        return state, run_dir
+    timeout = _verify_timeout(task, remaining, verify_timeout_s)
+    verify_official(
+        repo_root,
+        runs_root,
+        task,
+        seed=state.get("seed") or REFERENCE_SEED,
+        timeout_s=timeout,
+    )
+    return _load(repo_root, runs_root)
+
+
+def _verify_timeout(task: str, remaining: float, requested: int | None) -> int:
+    cap = max(1, int(remaining))
+    if requested is None:
+        return min(DEFAULT_TIMEOUT_S[task], cap)
+    return min(int(requested), cap)
+
+
+def _dataset_for_verify(state: dict) -> dict:
+    dataset = (state.get("data") or {}).get("dataset")
+    if dataset:
+        return dataset
+    dataset = _locate_dataset(Path(state["data_dir"]), Path(state["repo_root"]))
+    state.setdefault("data", {})["dataset"] = dataset
+    return dataset
+
+
+def _task_circuit_path(task_state: dict) -> Path | None:
+    if task_state.get("role") not in {"imported_baseline", "retained_candidate"}:
         return None
     paths = task_state.get("paths") or {}
     for key in ("file", "directory", "kmb", "kmx"):
         if paths.get(key):
-            return Path(paths[key])
+            path = Path(paths[key])
+            if path.exists():
+                return path
     return None
+
+
+def _proposal_path(run_dir: Path, task: str, index: int, source: Path) -> Path:
+    """Path for a candidate. The directory is created only if a file is written."""
+
+    root = run_dir / "proposals" / task
+    if source.is_dir():
+        return root / f"candidate-{index}"
+    return root / f"candidate-{index}{source.suffix}"
+
+
+def _score_improved(previous: float, report: dict) -> bool:
+    if not report.get("competition_verified") or not report.get("cost_authoritative"):
+        return False
+    new = report.get("parsed_cost")
+    if isinstance(new, bool) or not isinstance(new, (int, float)):
+        return False
+    if not math.isfinite(previous) or not math.isfinite(float(new)):
+        return False
+    if previous <= 0 or float(new) <= 0:
+        return False
+    return float(new) < previous
+
+
+def _retain_candidate(state: dict, task: str, proposal: Path, report: dict, rewrite) -> None:
+    """Point this task at a verifier-accepted cheaper circuit. Other tasks stay put."""
+
+    task_state = state["tasks"].setdefault(task, {})
+    if proposal.is_dir():
+        files = sorted(path for path in proposal.rglob("*") if path.is_file())
+        paths = {"directory": str(proposal)}
+        sha = {str(path.relative_to(proposal)): _sha256(path) for path in files}
+    else:
+        paths = {"file": str(proposal)}
+        sha = {"file": _sha256(proposal)}
+    task_state["role"] = "retained_candidate"
+    task_state["paths"] = paths
+    task_state["sha256"] = sha
+    task_state["circuit_written"] = True
+    task_state["copied"] = False
+    task_state["submission_ready"] = False
+    task_state["leaderboard_score"] = None
+    task_state["measurement"] = {
+        "status": "proxy",
+        "note": (
+            "Local gate-count proxy of the retained candidate. "
+            "The task cost is the verifier JSON score, not this proxy."
+        ),
+        "before": rewrite.before,
+        "after": rewrite.after,
+    }
+    task_state["verification"] = report
+    task_state["competition_verified"] = True
+    task_state["note"] = (
+        "Verifier-accepted candidate with a lower official score than the previous artifact. "
+        "Other tasks were not modified. leaderboard_score stays null."
+    )
+    state["tasks"][task] = task_state
+    _refresh_verification_summary(state)
+
+
+def _delete_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.is_file():
+        path.unlink()
+    partial = Path(str(path) + ".partial")
+    if partial.is_file():
+        partial.unlink()
+    if partial.is_dir():
+        shutil.rmtree(partial)
+
+
+def _optimize_reason(status: str) -> str:
+    reasons = {
+        "accepted": (
+            "At least one proposal passed the official verifier with a strictly lower score "
+            "and replaced this task's retained artifact."
+        ),
+        "rejected": (
+            "A proposal was built and the verifier did not accept it with a lower score. "
+            "The previous artifact is still retained."
+        ),
+        "unchanged": "The peephole found no proxy improvement. No candidate was written.",
+        "budget": "The time budget stopped the loop before a candidate could be retained.",
+        "blocked": "Optimization did not run to a retained candidate.",
+        "not_rewritten": "The circuit could not be rewritten. The previous artifact was kept.",
+    }
+    return reasons.get(status, status)
+
+
+def _candidate_artifact(state: dict, task: str) -> Path | None:
+    """Use the retained circuit when one was recorded. Otherwise the sample."""
+
+    return _task_circuit_path(state["tasks"].get(task) or {})
 
 
 def _cost_one(artifact: dict) -> dict:

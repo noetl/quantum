@@ -3,7 +3,9 @@
 Spec file: `specs/001-noetl-pipeline/spec.md`
 
 Pinned main SHA for the score-parsing change: `349a858e52e78474c5ebb0fde02987a67813715f`
-(merge of PR #11). The spec text is still the file introduced at
+(merge of PR #11). The optimization loop was added from main
+`d45b477dc85ca8f3d0051937c44aea4e57ada90e` (merge of PR #14). The spec text
+is still the file introduced at
 `0b3915b38fb2de7897b735995b7be33fde617c63`. It was not edited.
 
 Constitution: `.specify/memory/constitution.md` at that same commit.
@@ -20,7 +22,7 @@ playbooks orchestrate.
 | [#6](https://github.com/noetl/quantum/issues/6) provenance | User story 4, FR-015, FR-020, SC-004 | `runs/<id>/provenance.json` is written. The committed experiments table is not filled with numbers. |
 | [#7](https://github.com/noetl/quantum/issues/7) packaging | User story 3, FR-011–FR-014, SC-003 | Layout unit tests pass. The playbook does not write a zip while verification is false. |
 | [#8](https://github.com/noetl/quantum/issues/8) data fetch | FR-019 | `scripts/fetch_data.sh` documents the Kaggle CLI and does not download unless asked. Rules are not accepted here. |
-| [#9](https://github.com/noetl/quantum/issues/9) optimization | User story 2 | Not started. |
+| [#9](https://github.com/noetl/quantum/issues/9) optimization | User story 2 (acceptance scenarios 1 and 2), FR-003, FR-004, FR-010, FR-011 | `playbooks/vqcc_optimize.yaml` plus `vqcc.optimize`. One task per step. A proposal is retained only when that task's official verifier accepts it and the JSON `score` is strictly lower. A rejected proposal does not replace the previous artifact. A pass that builds nothing writes no file. `tasks/*/generate.py` still refuses. No Kaggle dataset was present for this change, so no reference-circuit score is claimed. |
 
 FR-006, FR-007, and FR-008 remain `[NEEDS CLARIFICATION]` in the spec. This
 implementation does not edit those markers.

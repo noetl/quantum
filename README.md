@@ -139,10 +139,12 @@ the wiki mirror under `docs/wiki/`.
 
 ## How this repo uses NoETL
 
-`playbooks/vqcc_pipeline.yaml` is the orchestrator: prepare, check data, adapt
-each task, verify, cost, package, record. Per-task `tasks/*/generate.py`
-scripts still exit without writing a circuit. The playbook is the path that
-actually runs.
+`playbooks/vqcc_pipeline.yaml` is the baseline orchestrator: prepare, check
+data, adapt each task, verify, cost, package, record.
+`playbooks/vqcc_optimize.yaml` adds a per-task peephole after that
+verification and keeps a circuit only when the official verifier accepts a
+strictly lower score. Per-task `tasks/*/generate.py` scripts still exit
+without writing a circuit. The playbooks are the paths that actually run.
 
 The pattern comes from the NoETL CUDA-Q fixture at tag `v2.10.15`,
 [`tests/fixtures/playbooks/quantum_cudaq/`](https://github.com/noetl/noetl/tree/v2.10.15/tests/fixtures/playbooks/quantum_cudaq)

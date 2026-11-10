@@ -87,6 +87,52 @@ This cloud workspace did not run those scripts on the competition data. The priv
 A structural circuit loading in kickmix is `measurement.status: measured`.
 That is not competition verification.
 
+## Optimization
+
+`playbooks/vqcc_optimize.yaml` is separate from the eleven-step baseline so
+`noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` stays the
+issue 2 command. The optimize playbook verifies each task, then calls
+`python3 -m vqcc.pipeline optimize --task <name>`.
+
+The rewriter in `vqcc/optimize.py` reads `.kmb` through a memory map and
+writes column payloads to temporary files. It does not construct a
+`kickmix.Circuit`, which is what keeps the ~886 MB dqi sample from being
+loaded as a Python circuit. `.kmx` is streamed by line. A dfthcsos directory
+is walked one file at a time; `submission.npz` is copied with a byte stream
+and is not opened as an array.
+
+Passes, all semantics-preserving on the kickmix instruction set:
+
+- Cancel a self-inverse gate with a later copy when every gate between them
+  commutes. Self-inverse gates are X, CX, CCX, Z, CZ, CCZ, SWAP, CSWAP, NEG,
+  and BIT_INVERT, including the conditional forms. CCX controls are unordered,
+  CCZ and CZ and SWAP are symmetric, and CSWAP's swapped pair is unordered.
+  Commutation is disjoint support, or both gates diagonal in the Z basis
+  (Z, CZ, CCZ, Z_POW, NEG). `PUSH_CONDITION` and `POP_CONDITION` are barriers.
+- Fuse two Z or Z_POW gates on the same qubit and the same condition when the
+  fused angle does not increase the T-like count or the level-4-or-finer
+  rotation count. Angles are the file's exact 128-bit turn fraction. An exact
+  identity is dropped. An exact half-turn is written as Z.
+- A later `BIT_STORE0` or `BIT_STORE1` replaces an earlier store of the same
+  bit under the same condition. An adjacent `PUSH_CONDITION` / `POP_CONDITION`
+  with nothing between them is removed.
+
+The local key `(toffoli_like, t_like, high_rotations)` only decides whether
+the rewrite is worth a verifier call. Toffoli-like is CCX+CCZ+CSWAP. T-like
+is Clifford-hierarchy level 3, which is kickmix `num_t_like`. It is not a
+task cost and not a leaderboard score.
+
+Retention uses the official verifier JSON `score`. Lower is better: user
+story 2 asks for a cheaper circuit, and the hub ratio is reference-cost over
+cost. A candidate is kept only when `competition_verified` is true,
+`cost_authoritative` is true, and the new score is strictly less than the
+retained score (FR-004, FR-011). Otherwise the previous path stays. One
+optimize step never writes another task's files (user story 2, scenario 1).
+
+Defaults are one candidate, a 32-gate window, a 2 GiB per-file budget, and a
+14400 s cap on the optimize step. `max_candidates` is limited to 3.
+`prepare` in this playbook does not pass `--package-when-verified`.
+
 ## Costs
 
 | Task | What the cost step computes |

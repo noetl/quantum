@@ -28,11 +28,15 @@ the packaging gate. It is not an optimizer.
    unapplied, and the hub geometric mean is not `leaderboard_score`.
 4. [Issue 7](https://github.com/noetl/quantum/issues/7). After verification
    can pass, let the package step call `vqcc.packaging` on the accepted files.
-5. [Issue 3](https://github.com/noetl/quantum/issues/3) and
-   [issue 9](https://github.com/noetl/quantum/issues/9). Replace
-   `tasks/*/generate.py` refusals with generators that emit kickmix circuits,
-   keep the previous accepted artifact when the verifier rejects a proposal,
-   and log only measured costs.
+5. [Issue 9](https://github.com/noetl/quantum/issues/9). The optimization
+   loop is in `playbooks/vqcc_optimize.yaml`. It starts from a verified
+   baseline, rewrites one task with a kickmix peephole, and keeps the
+   candidate only when the official verifier accepts a strictly lower JSON
+   score. `tasks/*/generate.py` still refuses to write a circuit, because
+   that path is "build a new circuit," not "rewrite a verified one."
+6. [Issue 3](https://github.com/noetl/quantum/issues/3). Competition-quality
+   generators, as opposed to peephole rewrites of a baseline, are still not
+   implemented.
 
 ## Explicitly out of scope until someone asks
 
