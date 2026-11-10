@@ -25,11 +25,15 @@ from vqcc.official_verifier import (
 from vqcc.formulas import (
     E_GAP_FLOOR_HA,
     FROBENIUS_TOLERANCE_HA,
+    HUB_AGGREGATE_GAP,
     LAMBDA_FLOOR_HA,
     QUBIT_CAP,
+    TASKS as FORMULA_TASKS,
+    FormulaError,
     FormulaSource,
     dfthcsos_constraint_notes,
     invsqrt_cost,
+    unconfirmed_hub_aggregate,
 )
 
 # main SHA inspected before this implementation. The spec at this commit is
@@ -273,39 +277,83 @@ def verify_official(
     return _step("verify_official", state, **report)
 
 
-def cost(repo_root: Path, runs_root: Path, aggregate: bool = False) -> dict:
+def cost(
+    repo_root: Path,
+    runs_root: Path,
+    aggregate: bool = False,
+    refcosts: dict[str, float] | None = None,
+) -> dict:
     state, run_dir = _load(repo_root, runs_root)
     reports = {}
     for task in TASKS:
         reports[task] = _cost_one(state["tasks"].get(task) or {})
-    aggregate_report = None
-    if aggregate:
-        aggregate_report = {
-            "requested": True,
-            "computed": False,
-            "unconfirmed": True,
-            "source": "hub",
-            "leaderboard_score": None,
-            "note": (
-                "FR-008 is still open. The hub geometric mean is not computed "
-                "here because the three task costs are not a competition result, "
-                "and the expression stays labeled unconfirmed."
-            ),
-        }
-    else:
-        aggregate_report = {
-            "requested": False,
-            "computed": False,
-            "unconfirmed": True,
-            "leaderboard_score": None,
-        }
+    aggregate_report = _aggregate_report(aggregate, refcosts, reports)
     state["costs"] = {
         "tasks": reports,
         "aggregate": aggregate_report,
         "leaderboard_score": None,
     }
+    state["leaderboard_score"] = None
     _save(run_dir, state)
     return _step("cost", state, **state["costs"])
+
+
+def _aggregate_report(
+    requested: bool,
+    refcosts: dict[str, float] | None,
+    reports: dict[str, dict],
+) -> dict:
+    """Hub geometric mean, only when asked, never stored as LB.
+
+    Spec FR-008 is unresolved. FR-009 allows the expression on an explicit
+    request and forbids the LB column. FR-016 keeps leaderboard_score null
+    without a Kaggle leaderboard return. Refcosts are the caller's numbers.
+    """
+
+    base = {
+        "requested": bool(requested),
+        "computed": False,
+        "unconfirmed": True,
+        "source": "hub",
+        "expression": "(prod refcost/cost) ** (1/3)",
+        "leaderboard_score": None,
+        "spec": "specs/001-noetl-pipeline/spec.md FR-008, FR-009, FR-016",
+    }
+    if not requested:
+        base["gap"] = HUB_AGGREGATE_GAP
+        base["note"] = "Aggregate was not requested. leaderboard_score stays null."
+        return base
+    authoritative = {}
+    missing = []
+    for task in TASKS:
+        report = reports.get(task) or {}
+        if report.get("cost_authoritative") and report.get("status") == "computed":
+            authoritative[task] = float(report["value"])
+        else:
+            missing.append(task)
+    supplied = dict(refcosts or {})
+    missing_refs = [task for task in TASKS if task not in supplied]
+    if missing or missing_refs:
+        base["gap"] = HUB_AGGREGATE_GAP
+        base["missing_authoritative_costs"] = missing
+        base["missing_refcosts"] = missing_refs
+        base["note"] = (
+            "The hub mean was requested and was not computed. "
+            "It needs three authoritative verifier scores and three caller-supplied "
+            "refcosts. The spec does not define those refcosts."
+        )
+        return base
+    try:
+        computed = unconfirmed_hub_aggregate(
+            {task: supplied[task] for task in FORMULA_TASKS},
+            authoritative,
+        )
+    except FormulaError as exc:
+        base["gap"] = HUB_AGGREGATE_GAP
+        base["note"] = f"Hub mean was not computed: {exc}"
+        return base
+    computed["leaderboard_score"] = None
+    return computed
 
 
 def package(repo_root: Path, runs_root: Path) -> dict:
@@ -414,14 +462,27 @@ def record(repo_root: Path, runs_root: Path) -> dict:
         "mode": state["mode"],
         "verification_status": (state.get("verification") or {}).get("status"),
         "package_status": (state.get("package") or {}).get("status"),
-        "zip_written": False,
+        "zip_written": bool((state.get("package") or {}).get("zip_written")),
         "experiment_log_written": False,
         "leaderboard_score": None,
         "tasks": {
             task: {
                 "role": (state["tasks"].get(task) or {}).get("role"),
-                "competition_verified": False,
+                "competition_verified": bool(
+                    (state["tasks"].get(task) or {}).get("competition_verified")
+                ),
                 "circuit_written": bool((state["tasks"].get(task) or {}).get("circuit_written")),
+                "cost_authoritative": bool(
+                    ((state.get("costs") or {}).get("tasks") or {}).get(task, {}).get(
+                        "cost_authoritative"
+                    )
+                ),
+                "cost_parse": (
+                    ((state["tasks"].get(task) or {}).get("verification") or {}).get("cost_parse")
+                ),
+                "parsed_cost": (
+                    ((state["tasks"].get(task) or {}).get("verification") or {}).get("parsed_cost")
+                ),
             }
             for task in TASKS
         },
@@ -546,12 +607,44 @@ def _candidate_artifact(state: dict, task: str) -> Path | None:
 
 
 def _cost_one(artifact: dict) -> dict:
+    verification = artifact.get("verification") or {}
+    if verification.get("cost_authoritative") and verification.get("parsed_cost") is not None:
+        return {
+            "role": artifact.get("role"),
+            "leaderboard_score": None,
+            "competition_cost": True,
+            "cost_authoritative": True,
+            "status": "computed",
+            "source": "official verifier JSON field score",
+            "formula_source": "verifier",
+            "expression": (
+                "stdout JSON score; FR-004 says the competition verifier "
+                "overrides the hub and the paper"
+            ),
+            "inputs": dict(verification.get("score_inputs") or {}),
+            "value": float(verification["parsed_cost"]),
+            "cost_parse": verification.get("cost_parse"),
+            "verifier_status": verification.get("verifier_status"),
+            "unconfirmed": False,
+            "note": (
+                "Task cost is the official verifier's JSON score. "
+                "FR-006 and FR-007 are not re-derived from hub or paper text. "
+                "This number is not a leaderboard score."
+            ),
+        }
     measurement = artifact.get("measurement") or None
     base = {
         "role": artifact.get("role"),
         "leaderboard_score": None,
         "competition_cost": False,
+        "cost_authoritative": False,
     }
+    if verification and verification.get("cost_parse") not in {None, "unparsed"}:
+        base["ignored_cost_parse"] = verification.get("cost_parse")
+        base["ignored_reason"] = (
+            "A verifier stdout parse that is not cost_authoritative "
+            "is not used as the task cost."
+        )
     if not measurement or measurement.get("status") != "measured":
         base["status"] = "not_computed"
         base["reason"] = "no kickmix measurement for this artifact"

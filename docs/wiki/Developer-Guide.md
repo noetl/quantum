@@ -63,11 +63,17 @@ dataset is local:
 
 ## Formula changes
 
-FR-006, FR-007, and FR-008 stay open until `verifiers/` confirms them.
-[Issue 5](https://github.com/noetl/quantum/issues/5). Do not make paper
-equation 43 or the square-root `λ_eff` the silent default. The invsqrt
-product is the one expression both public write-ups share, and the cost step
-says the extra Z_POW pricing is not applied.
+FR-006, FR-007, and FR-008 stay open. [Issue 5](https://github.com/noetl/quantum/issues/5).
+Do not make paper equation 43 or the square-root `λ_eff` the silent default.
+The invsqrt product is the one expression both public write-ups share, and the
+kickmix cost path says the extra Z_POW pricing is not applied.
+
+When `cost_authoritative` is true, the cost step uses the verifier JSON
+`score` instead of those formulas (spec FR-004). Parsing is
+`vqcc.official_verifier.parse_verifier_stdout`. Fixtures live in
+`tests/fixtures/verifier_stdout/`. The hub geometric mean is
+`vqcc.formulas.unconfirmed_hub_aggregate`. It does not set
+`leaderboard_score`.
 
 ## Provenance
 

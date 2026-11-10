@@ -170,6 +170,20 @@ def dfthcsos_constraint_notes(
     return notes
 
 
+# specs/001-noetl-pipeline/spec.md FR-008, FR-009, and FR-016.
+# The hub expression is not a leaderboard return, and the spec defines no
+# numeric refcost constants.
+HUB_AGGREGATE_GAP = (
+    "FR-008 is unresolved in specs/001-noetl-pipeline/spec.md: the hub "
+    "geometric mean of refcost/cost over invsqrt, dqi, and dfthcsos is "
+    "unconfirmed, and the paper states no aggregate. FR-009 emits that mean "
+    "only on an explicit request, labels it unconfirmed, and forbids writing "
+    "it to the LB column. FR-016 keeps leaderboard_score null when no "
+    "leaderboard return was supplied. The spec does not define numeric "
+    "refcost values, so they are not filled in here."
+)
+
+
 def geometric_mean_ratio(refcosts: dict[str, float], costs: dict[str, float]) -> float:
     """Evaluate the hub's aggregate expression.
 
@@ -178,7 +192,8 @@ def geometric_mean_ratio(refcosts: dict[str, float], costs: dict[str, float]) ->
         Score = (Π_b refcost_b / cost_b) ^ (1/3)
 
     over invsqrt, dqi, and dfthcsos, and marks it unconfirmed. The paper
-    does not state this aggregate. Callers must label the result unconfirmed.
+    does not state this aggregate. Callers must label the result unconfirmed
+    and must not store it as a leaderboard score (FR-008, FR-009, FR-016).
     """
 
     product = 1.0
@@ -191,6 +206,38 @@ def geometric_mean_ratio(refcosts: dict[str, float], costs: dict[str, float]) ->
             raise FormulaError("refcost and cost must be positive")
         product *= ref / cost
     return product ** (1.0 / 3.0)
+
+
+def unconfirmed_hub_aggregate(
+    refcosts: dict[str, float],
+    costs: dict[str, float],
+) -> dict[str, object]:
+    """Return the hub geometric mean without calling it a leaderboard score.
+
+    ``refcosts`` and ``costs`` must be supplied by the caller. This function
+    does not invent reference costs. ``leaderboard_score`` is always null
+    (spec FR-009 and FR-016).
+    """
+
+    value = geometric_mean_ratio(refcosts, costs)
+    return {
+        "requested": True,
+        "computed": True,
+        "unconfirmed": True,
+        "source": "hub",
+        "expression": "(prod refcost/cost) ** (1/3)",
+        "inputs": {
+            "refcosts": {task: float(refcosts[task]) for task in TASKS},
+            "costs": {task: float(costs[task]) for task in TASKS},
+        },
+        "value": value,
+        "leaderboard_score": None,
+        "spec": "specs/001-noetl-pipeline/spec.md FR-008, FR-009, FR-016",
+        "note": (
+            "Hub geometric mean of caller-supplied refcosts and costs. "
+            "Unconfirmed. Not written to leaderboard_score."
+        ),
+    }
 
 
 def _source(source: FormulaSource | str) -> FormulaSource:

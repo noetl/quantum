@@ -1,0 +1,8 @@
+{
+  "status": "PASS",
+  "score": 2076774.233715282,
+  "verified_shots": 200540928,
+  "num_qubits": 260,
+  "t_count": 1,
+  "toffoli_equivalent": 7987.593206597238
+}

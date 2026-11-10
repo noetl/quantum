@@ -150,6 +150,27 @@ is true, which this baseline does not set.
 
 ## Scores
 
+An official verifier that prints one JSON object with `status` `PASS` and a
+positive `score` stores that number as the task cost (`cost_authoritative:
+true`). The cost step names the source `official verifier JSON field score`.
+`leaderboard_score` stays null: the hub geometric mean is still unconfirmed
+(spec FR-008), is not written to the LB column (FR-009), and is not a Kaggle
+leaderboard return (FR-016). The spec does not define numeric reference costs.
+
+To evaluate the hub mean on numbers you supply, after three authoritative
+scores exist in the active run:
+
+```bash
+python3 -m vqcc.pipeline cost --aggregate \
+  --ref-invsqrt REF_INVSQRT \
+  --ref-dqi REF_DQI \
+  --ref-dfthcsos REF_DFTHCSOS
+```
+
+The result has `aggregate.unconfirmed: true` and `leaderboard_score: null`.
+Without `--aggregate`, or without those three refcosts, the mean is not
+computed and the gap text cites FR-008.
+
 ```bash
 python3 scripts/score.py invsqrt --qubits 3 --toffoli 1 --t-gates 1 --json
 ```

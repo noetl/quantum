@@ -10,7 +10,7 @@
     "orchestrate_core_version": "0.1.0",
     "schema_digest": "sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6",
     "schema_id": "https://noetl.ai/schema/v2/playbook.schema.json",
-    "server_version": "3.153.0",
+    "server_version": "3.156.0",
     "_http_status": 200
   },
   "playbooks": [

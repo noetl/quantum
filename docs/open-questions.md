@@ -5,8 +5,11 @@ The three scoring questions are also `[NEEDS CLARIFICATION]` markers in
 `0b3915b38fb2de7897b735995b7be33fde617c63`. They stay open. The baseline
 playbook can evaluate the shared invsqrt expression from kickmix counts and
 names that source. It does not apply a dqi `R(ε)` or a dfthcsos `λ_eff`, and
-it does not treat the hub geometric mean as the official score. The Kaggle
-`verifiers/` tree is still the authority, and it is not in this repository.
+it does not treat the hub geometric mean as the official score. A PASS
+JSON `score` from an official script is stored as that task's cost and does
+not choose a dqi `R(ε)`, a dfthcsos `λ_eff`, or an official aggregate. The
+Kaggle `verifiers/` tree is still the authority for those three questions, and
+it is not in this repository.
 Tracked as <https://github.com/noetl/quantum/issues/5>.
 
 ## Scoring
