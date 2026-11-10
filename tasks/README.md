@@ -1,7 +1,10 @@
 # Tasks
 
-One directory per competition task. Generators are not implemented. Running
-`generate.py` prints a blocked or not-implemented message and writes no circuit.
+One directory per competition task. `generate.py` is still not a generator.
+Running it prints a blocked or not-implemented message and writes no circuit.
+Rewriting a verified baseline is `playbooks/vqcc_optimize.yaml`, not these
+scripts. User story 2 says a task with no generator must not receive a
+placeholder file.
 
 | Directory | Deliverable | Cost, as far as the sources agree |
 | --- | --- | --- |

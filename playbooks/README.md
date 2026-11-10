@@ -1,7 +1,8 @@
 # Playbooks
 
-`vqcc_pipeline.yaml` is the NoETL entry point for this competition. It was
-executed on the NoETL **5.3.2** local runtime (`noetl run --runtime local`).
+`vqcc_pipeline.yaml` is the baseline entry point. `vqcc_optimize.yaml` is the
+per-task optimization loop. Both were checked on the NoETL **5.3.2** local
+runtime (`noetl run --runtime local`).
 
 That runtime runs `kind: shell` steps whose `cmds` are shell strings, and it
 follows `next: [{step: ...}]`. `kind: python` is rejected by the local
@@ -26,6 +27,20 @@ noetl run playbooks/vqcc_pipeline.yaml --runtime local --json --set mode=structu
 `leaderboard_score` is null. Structural mode writes real kickmix files under
 `runs/` and labels them `structural_fixture`. Those files are not submission
 candidates.
+
+Optimization, only when a verified baseline is already the point of the run:
+
+```bash
+noetl run playbooks/vqcc_optimize.yaml --runtime local --json \
+  --set data_dir=/absolute/path/to/data \
+  --set runs_root=/absolute/path/to/runs \
+  --set repo_root="$PWD" \
+  --set seed=20261108
+```
+
+That playbook does not arm packaging. A candidate is kept only when the
+official verifier accepts it and the JSON score is strictly lower. The
+notebook entrypoint that calls the same steps is `kaggle/vqcc_optimize.py`.
 
 The CUDA-Q example that motivated quantum playbooks in NoETL is
 [`tests/fixtures/playbooks/quantum_cudaq/`](https://github.com/noetl/noetl/tree/v2.10.15/tests/fixtures/playbooks/quantum_cudaq)

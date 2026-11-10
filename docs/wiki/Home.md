@@ -3,7 +3,7 @@
 Home for the NoETL entry in
 [Google Quantum AI — Verifiable Quantum Circuit Compilation](https://www.kaggle.com/competitions/google-verifiable-quantum-circuit-compilation).
 
-This wiki matches this tree: verifier JSON score parsing, and the default local CLI run (`tests/test_playbook_cli.py`, eleven steps).
+This wiki matches this tree: verifier JSON score parsing, the default local CLI run (`tests/test_playbook_cli.py`, eleven steps), and the per-task optimization loop (`playbooks/vqcc_optimize.yaml`).
 The spec contract is `specs/001-noetl-pipeline/spec.md` at main
 `0b3915b38fb2de7897b735995b7be33fde617c63`.
 Issues: [2](https://github.com/noetl/quantum/issues/2) through
@@ -29,11 +29,30 @@ under `runs/` using **kickmix 1.0.0**. They are labeled `structural_fixture`.
 formula evaluation of that file, not a leaderboard score. dqi and dfthcsos
 costs stay uncomputed because `ε⁺` and the chemistry inputs are not invented.
 
+## Optimization loop
+
+`playbooks/vqcc_optimize.yaml` is a second playbook. It verifies each baseline,
+then runs a kickmix peephole on that task only. A candidate replaces the
+retained artifact only when the official verifier accepts it and the JSON
+`score` is strictly lower (user story 2, FR-011). The other tasks' files are
+not written. A pass that does not improve the local gate-count proxy writes
+no circuit (FR-003). Packaging stays disarmed. The Kaggle entrypoint is
+`python3 kaggle/vqcc_optimize.py`. It does not submit.
+
+The passes are adjacent and windowed cancellation of self-inverse gates, and
+fusion of Z rotations on the same qubit when that fusion does not add a
+T-like gate or a level-4-or-finer rotation. They are semantics-preserving on
+the kickmix gate set. They are not a new invsqrt, dqi, or dfthcsos algorithm.
+If the reference circuits have no such pairs inside the window, the loop keeps
+the baseline and writes no candidate.
+
 ## What is not done
 
-- No competition-quality optimizer.
-- No official verifier pass. The Kaggle dataset needs an account that has
-  accepted the rules. This repo does not accept those rules or submit.
+- No measured improvement on the Kaggle reference circuits. This environment
+  does not have the dataset, so the official verifiers were not run here.
+- No official verifier pass recorded by this repository. The Kaggle dataset
+  needs an account that has accepted the rules. This repo does not accept
+  those rules or submit.
 - FR-006, FR-007, and FR-008 in the spec stay `[NEEDS CLARIFICATION]`.
 - The committed experiments table has no Local or LB numbers.
 

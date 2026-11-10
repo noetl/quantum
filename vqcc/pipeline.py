@@ -18,6 +18,7 @@ from vqcc.orchestrator import (
     adapt_task,
     check_data,
     cost,
+    optimize_task,
     package,
     prepare_run,
     record,
@@ -57,6 +58,14 @@ def main(argv: list[str] | None = None) -> int:
     one.add_argument("--seed", default=None)
     one.add_argument("--timeout", type=int, default=None)
     one.set_defaults(func=_verify_one)
+    opt = sub.add_parser("optimize", parents=[common])
+    opt.add_argument("--task", required=True)
+    opt.add_argument("--time-budget-s", type=float, default=None)
+    opt.add_argument("--memory-budget-bytes", type=int, default=2 * 1024**3)
+    opt.add_argument("--window", type=int, default=32)
+    opt.add_argument("--max-candidates", type=int, default=1)
+    opt.add_argument("--verify-timeout", type=int, default=None)
+    opt.set_defaults(func=_optimize)
     cost_cmd = sub.add_parser("cost", parents=[common])
     cost_cmd.add_argument(
         "--aggregate",
@@ -111,6 +120,19 @@ def _verify_one(args: argparse.Namespace) -> dict:
         args.task,
         seed=args.seed,
         timeout_s=args.timeout,
+    )
+
+
+def _optimize(args: argparse.Namespace) -> dict:
+    return optimize_task(
+        args.repo_root,
+        args.runs_root,
+        args.task,
+        time_budget_s=args.time_budget_s,
+        memory_budget_bytes=args.memory_budget_bytes,
+        window=args.window,
+        max_candidates=args.max_candidates,
+        verify_timeout_s=args.verify_timeout,
     )
 
 

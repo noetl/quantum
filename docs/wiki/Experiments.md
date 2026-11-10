@@ -64,6 +64,25 @@ written. Trimmed JSON:
 
 `docs/experiments.md` gained no Local or LB cell.
 
+## Optimization loop, 2026-11-10
+
+`playbooks/vqcc_optimize.yaml` and `kaggle/vqcc_optimize.py` were added from
+main `d45b477d`. No competition data was mounted. No official verifier was
+run on a reference circuit. No Local or LB cell was written.
+
+`python3 -m unittest discover -s tests -t .` with `noetl==5.3.2` and
+`kickmix==1.0.0`: 62 tests passed, 1 skipped. The skip is the kickmix-missing
+guard. `tests/test_playbook_cli.py` still passes. The new tests cover a
+byte-identical kmb round trip, kickmix simulation of the peephole, a rejected
+proposal, a higher verifier score, task isolation, a dfthcsos directory whose
+`submission.npz` bytes are copied, and the optimize playbook with an empty
+data directory.
+
+`POST https://noetl.ai/api/dsl/validate` on 2026-11-10, server 3.156.1:
+`vqcc_pipeline.yaml` and `vqcc_optimize.yaml` both returned HTTP 200,
+`valid: true`, findings empty. Schema digest
+`sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6`.
+
 ## How to log a real attempt later
 
 ```bash
