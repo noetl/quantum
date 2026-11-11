@@ -11,7 +11,7 @@ Issues: [2](https://github.com/noetl/quantum/issues/2) through
 
 ## What runs today
 
-`noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` on the PyPI CLI **noetl 5.3.2**, after the document passes `POST https://noetl.ai/api/dsl/validate`. Rechecked 2026-11-10 on server **3.156.1** (`valid: true`, findings empty). Schema digest `sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6` is unchanged from the 3.156.0 and 3.153.0 / `noetl/server@5cf0712` snapshots. The workflow's first step is named `start`.
+`noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` on the PyPI CLI **noetl 5.3.2**, after the document passes `POST https://noetl.ai/api/dsl/validate`. Rechecked 2026-11-11 on server **3.156.2** (`valid: true`, `execute_verdict: accept`, findings empty). Schema digest `sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be`. The 2026-11-10 digest on server 3.156.1 was `sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6`. The workflow's first step is named `start`.
 
 With no competition data the playbook:
 
@@ -32,19 +32,24 @@ costs stay uncomputed because `ε⁺` and the chemistry inputs are not invented.
 ## Optimization loop
 
 `playbooks/vqcc_optimize.yaml` is a second playbook. It verifies each baseline,
-then runs a kickmix peephole on that task only. A candidate replaces the
-retained artifact only when the official verifier accepts it and the JSON
-`score` is strictly lower (user story 2, FR-011). The other tasks' files are
-not written. A pass that does not improve the local gate-count proxy writes
-no circuit (FR-003). Packaging stays disarmed. The Kaggle entrypoint is
-`python3 kaggle/vqcc_optimize.py`. It does not submit.
+then rewrites that task only. A candidate replaces the retained artifact only
+when the official verifier accepts it and the JSON `score` is strictly lower
+(user story 2, FR-004, FR-011). The other tasks' files are not written. A
+pass that does not shrink the instruction count or the static cost weight
+writes no circuit (FR-003). Packaging stays disarmed. The Kaggle entrypoint
+is `python3 kaggle/vqcc_optimize.py`. It does not submit.
 
-The passes are adjacent and windowed cancellation of self-inverse gates, and
-fusion of Z rotations on the same qubit when that fusion does not add a
-T-like gate or a level-4-or-finer rotation. They are semantics-preserving on
-the kickmix gate set. They are not a new invsqrt, dqi, or dfthcsos algorithm.
-If the reference circuits have no such pairs inside the window, the loop keeps
-the baseline and writes no candidate.
+The passes are semantics-preserving on the kickmix gate set. They are not a
+new invsqrt, dqi, or dfthcsos algorithm. Cancellation uses a configurable
+horizon (playbook default 4096) and only walks gates that share a qubit or a
+bit, plus condition barriers. Z rotations on one qubit merge at any distance
+until a gate they do not commute with. Arithmetic commutation lets a Toffoli
+slide past an X on its target, a phase on its controls, and other Toffolis
+that share those controls. invsqrt's static weight charges Toffolis, T gates,
+and fine rotations. dqi and dfthcsos charge Toffolis only (FR-006 and FR-007
+stay open on the factors in front of that count). A shrink that only removes
+free Cliffords is still sent to the verifier. A rewrite that adds Toffolis is
+not written.
 
 ## What is not done
 

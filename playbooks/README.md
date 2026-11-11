@@ -38,9 +38,11 @@ noetl run playbooks/vqcc_optimize.yaml --runtime local --json \
   --set seed=20261108
 ```
 
-That playbook does not arm packaging. A candidate is kept only when the
-official verifier accepts it and the JSON score is strictly lower. The
-notebook entrypoint that calls the same steps is `kaggle/vqcc_optimize.py`.
+That playbook does not arm packaging. The cancellation horizon defaults to
+4096. A shorter circuit is scored by the official verifier even when the
+removed gates are free Cliffords. The candidate is kept only when that
+verifier accepts it and the JSON score is strictly lower. The notebook
+entrypoint that calls the same steps is `kaggle/vqcc_optimize.py`.
 
 The CUDA-Q example that motivated quantum playbooks in NoETL is
 [`tests/fixtures/playbooks/quantum_cudaq/`](https://github.com/noetl/noetl/tree/v2.10.15/tests/fixtures/playbooks/quantum_cudaq)

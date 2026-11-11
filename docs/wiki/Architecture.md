@@ -101,26 +101,50 @@ loaded as a Python circuit. `.kmx` is streamed by line. A dfthcsos directory
 is walked one file at a time; `submission.npz` is copied with a byte stream
 and is not opened as an array.
 
-Passes, all semantics-preserving on the kickmix instruction set:
+Passes, all semantics-preserving on the kickmix instruction set. The same
+passes run for every task. The task changes which static weight can veto a
+write, because the published costs do not charge the same gates.
 
 - Cancel a self-inverse gate with a later copy when every gate between them
   commutes. Self-inverse gates are X, CX, CCX, Z, CZ, CCZ, SWAP, CSWAP, NEG,
   and BIT_INVERT, including the conditional forms. CCX controls are unordered,
   CCZ and CZ and SWAP are symmetric, and CSWAP's swapped pair is unordered.
-  Commutation is disjoint support, or both gates diagonal in the Z basis
-  (Z, CZ, CCZ, Z_POW, NEG). `PUSH_CONDITION` and `POP_CONDITION` are barriers.
-- Fuse two Z or Z_POW gates on the same qubit and the same condition when the
-  fused angle does not increase the T-like count or the level-4-or-finer
-  rotation count. Angles are the file's exact 128-bit turn fraction. An exact
-  identity is dropped. An exact half-turn is written as Z.
+  Disjoint gates commute. Diagonal gates (Z, CZ, CCZ, Z_POW, NEG) commute.
+  On top of that, for gates that share a condition bit, kickmix simulation
+  (bits and shot phase) allows: X on the target of CX or CCX; Z or Z_POW on
+  a control of CX, CCX, or CSWAP; CX gates that share only a control or only
+  a target; CCX gates that share both controls; CZ on the two CCX controls;
+  CCZ that covers both CCX controls and not the target; CX with CZ on its
+  control and a third qubit. `PUSH_CONDITION` and `POP_CONDITION` are barriers.
+  The search walks gates that share a qubit or a bit, so a 4096-gate horizon
+  does not scan every instruction. Z-rotation merging does not use this horizon.
+- Merge Z and Z_POW on the same qubit and the same condition by adding the
+  exact 128-bit turn fraction, across any run of gates the phase commutes
+  with. An exact identity is dropped. An exact half-turn is written as Z.
+  Two level-4 rotations that sum to a T are merged: the invsqrt score prices
+  a fine rotation far above one T, and the old lexicographic key refused that
+  merge because `t_like` went up.
 - A later `BIT_STORE0` or `BIT_STORE1` replaces an earlier store of the same
   bit under the same condition. An adjacent `PUSH_CONDITION` / `POP_CONDITION`
   with nothing between them is removed.
 
-The local key `(toffoli_like, t_like, high_rotations)` only decides whether
-the rewrite is worth a verifier call. Toffoli-like is CCX+CCZ+CSWAP. T-like
-is Clifford-hierarchy level 3, which is kickmix `num_t_like`. It is not a
-task cost and not a leaderboard score.
+What gets a verifier call (FR-003, FR-004):
+
+- Fewer instructions, and the static weight did not go up. This is the case
+  the 2026-11-11 Kaggle run missed: Clifford pairs cancelled, the instruction
+  count fell, and `(toffoli_like, t_like, high_rotations)` did not, so no
+  file was written.
+- Or a lower static weight at the same size.
+- Not a higher static weight. invsqrt's weight is `4*Toffoli + T + 16*fine`
+  (16 is kickmix's 4-Toffoli synthesis stand-in, not the shot-mean score).
+  dqi and dfthcsos use `4*Toffoli` only. Conditional gates are still counted
+  statically; the verifier's shot mean is the score.
+
+`Q` is the largest qubit id plus one. kickmix rejects a header that is not
+`max_id + 1`. When a cancelled gate was the only user of the highest id, the
+rewrite appends two `Z` gates on that id. Two `Z` gates are identity and
+free, so the header width stays and the verifier's input layout is not
+renumbered. `submission.npz` is still a byte copy.
 
 Retention uses the official verifier JSON `score`. Lower is better: user
 story 2 asks for a cheaper circuit, and the hub ratio is reference-cost over
@@ -129,9 +153,10 @@ cost. A candidate is kept only when `competition_verified` is true,
 retained score (FR-004, FR-011). Otherwise the previous path stays. One
 optimize step never writes another task's files (user story 2, scenario 1).
 
-Defaults are one candidate, a 32-gate window, a 2 GiB per-file budget, and a
-14400 s cap on the optimize step. `max_candidates` is limited to 3.
-`prepare` in this playbook does not pass `--package-when-verified`.
+Defaults are one candidate, a 4096-gate cancellation horizon, a 2 GiB
+per-file budget, and a 14400 s cap on the optimize step. `max_candidates`
+is limited to 3. `prepare` in this playbook does not pass
+`--package-when-verified`.
 
 ## Costs
 

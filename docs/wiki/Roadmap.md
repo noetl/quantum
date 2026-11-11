@@ -30,10 +30,11 @@ the packaging gate. It is not an optimizer.
    can pass, let the package step call `vqcc.packaging` on the accepted files.
 5. [Issue 9](https://github.com/noetl/quantum/issues/9). The optimization
    loop is in `playbooks/vqcc_optimize.yaml`. It starts from a verified
-   baseline, rewrites one task with a kickmix peephole, and keeps the
-   candidate only when the official verifier accepts a strictly lower JSON
-   score. `tasks/*/generate.py` still refuses to write a circuit, because
-   that path is "build a new circuit," not "rewrite a verified one."
+   baseline, rewrites one task, and keeps the candidate only when the
+   official verifier accepts a strictly lower JSON score. A shorter circuit
+   is scored even if the removed gates are Cliffords. `tasks/*/generate.py`
+   still refuses to write a circuit, because that path is "build a new
+   circuit," not "rewrite a verified one."
 6. [Issue 3](https://github.com/noetl/quantum/issues/3). Competition-quality
    generators, as opposed to peephole rewrites of a baseline, are still not
    implemented.

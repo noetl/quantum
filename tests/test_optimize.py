@@ -179,7 +179,7 @@ class PeepholeTests(unittest.TestCase):
             self.assertFalse(result.wrote)
             self.assertFalse(dst.exists())
 
-    def test_level4_pair_merges_only_when_the_proxy_does_not_get_worse(self) -> None:
+    def test_level4_pair_merges_when_the_sum_is_a_cheaper_t(self) -> None:
         kickmix = _kickmix()
         with tempfile.TemporaryDirectory() as tmp:
             cancel = Path(tmp) / "cancel.kmb"
@@ -191,18 +191,205 @@ class PeepholeTests(unittest.TestCase):
             self.assertTrue(cancelled.wrote)
             self.assertEqual(cancelled.after["high_rotations"], 0)
             kept = Path(tmp) / "kept.kmb"
-            refused = Path(tmp) / "refused.kmb"
-            kickmix.Circuit("Z_POW q0 0.125\nZ_POW q0 0.125\n").to_file(str(kept), format="kmb")
-            refused_result = optimize_artifact(
-                str(kept), str(refused), window=4, memory_budget_bytes=2_000_000
+            merged = Path(tmp) / "merged.kmb"
+            original = kickmix.Circuit("Z_POW q0 0.125\nZ_POW q0 0.125\n")
+            original.to_file(str(kept), format="kmb")
+            merged_result = optimize_artifact(
+                str(kept), str(merged), window=4, memory_budget_bytes=2_000_000
             )
-            self.assertFalse(refused_result.wrote)
-            self.assertFalse(refused.exists())
+            self.assertTrue(merged_result.wrote)
+            self.assertEqual(merged_result.after["high_rotations"], 0)
+            self.assertEqual(merged_result.after["t_like"], 1)
+            self.assertLess(merged_result.after["cost_units"], merged_result.before["cost_units"])
+            optimized = kickmix.Circuit.from_file(str(merged))
+            self.assertEqual(
+                _snapshot(kickmix, original, [0], 0),
+                _snapshot(kickmix, optimized, [0], 0),
+            )
+            self.assertEqual(
+                _snapshot(kickmix, original, [1], 0),
+                _snapshot(kickmix, optimized, [1], 0),
+            )
+
+    def test_clifford_shrink_is_written_even_though_cost_units_stay_put(self) -> None:
+        kickmix = _kickmix()
+        text = "X q0\nX q1\nX q0\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.kmb"
+            dst = Path(tmp) / "out.kmb"
+            original = kickmix.Circuit(text)
+            original.to_file(str(src), format="kmb")
+            from vqcc.optimize import optimize_artifact
+
+            result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
+            self.assertTrue(result.wrote)
+            self.assertLess(result.after["instructions"], result.before["instructions"])
+            self.assertEqual(result.after["cost_units"], result.before["cost_units"])
+            self.assertEqual(result.after["toffoli_like"], 0)
+            optimized = kickmix.Circuit.from_file(str(dst))
+            self.assertEqual(optimized.num_qubits, original.num_qubits)
+            for sample in range(4):
+                qubits = [(sample >> index) & 1 for index in range(2)]
+                self.assertEqual(
+                    _snapshot(kickmix, original, qubits, 0),
+                    _snapshot(kickmix, optimized, qubits, 0),
+                )
+
+    def test_toffoli_cancels_across_x_on_the_target_and_keeps_qubit_width(self) -> None:
+        kickmix = _kickmix()
+        text = "CCX q0 q1 q2\nX q2\nCCX q0 q1 q2\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.kmb"
+            dst = Path(tmp) / "out.kmb"
+            original = kickmix.Circuit(text)
+            original.to_file(str(src), format="kmb")
+            from vqcc.optimize import optimize_artifact
+
+            result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
+            self.assertTrue(result.wrote)
+            self.assertEqual(result.after["toffoli_like"], 0)
+            self.assertLess(result.after["cost_units"], result.before["cost_units"])
+            optimized = kickmix.Circuit.from_file(str(dst))
+            self.assertEqual(optimized.num_qubits, original.num_qubits)
+            self.assertEqual(int(optimized.operation_statistics().num_toffoli_like), 0)
+            for sample in range(8):
+                qubits = [(sample >> index) & 1 for index in range(3)]
+                self.assertEqual(
+                    _snapshot(kickmix, original, qubits, 0),
+                    _snapshot(kickmix, optimized, qubits, 0),
+                )
+
+    def test_rotation_merge_is_not_limited_by_a_tiny_window(self) -> None:
+        kickmix = _kickmix()
+        text = "Z_POW q0 0.125\n" + ("X q1\n" * 8) + "Z_POW q0 0.125\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.kmb"
+            dst = Path(tmp) / "out.kmb"
+            original = kickmix.Circuit(text)
+            original.to_file(str(src), format="kmb")
+            from vqcc.optimize import optimize_artifact
+
+            result = optimize_artifact(str(src), str(dst), window=1, memory_budget_bytes=2_000_000)
+            self.assertTrue(result.wrote)
+            self.assertEqual(result.after["high_rotations"], 0)
+            self.assertEqual(result.after["t_like"], 1)
+            optimized = kickmix.Circuit.from_file(str(dst))
+            for sample in range(4):
+                qubits = [(sample >> index) & 1 for index in range(2)]
+                self.assertEqual(
+                    _snapshot(kickmix, original, qubits, 0),
+                    _snapshot(kickmix, optimized, qubits, 0),
+                )
+
+    def test_rotation_does_not_merge_across_a_toffoli_target(self) -> None:
+        kickmix = _kickmix()
+        text = "Z_POW q2 0.125\nCCX q0 q1 q2\nZ_POW q2 0.125\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.kmb"
+            dst = Path(tmp) / "out.kmb"
+            kickmix.Circuit(text).to_file(str(src), format="kmb")
+            from vqcc.optimize import optimize_artifact
+
+            result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
+            self.assertFalse(result.wrote)
+            self.assertFalse(dst.exists())
+            self.assertEqual(result.after["instructions"], result.before["instructions"])
+            self.assertEqual(result.after["high_rotations"], 2)
+
+    def test_cx_pair_cancels_across_a_same_control_partner(self) -> None:
+        kickmix = _kickmix()
+        text = "CX q0 q1\nCX q0 q2\nCX q0 q1\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.kmb"
+            dst = Path(tmp) / "out.kmb"
+            original = kickmix.Circuit(text)
+            original.to_file(str(src), format="kmb")
+            from vqcc.optimize import optimize_artifact
+
+            result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
+            self.assertTrue(result.wrote)
+            self.assertEqual(result.stats["cancelled_pairs"], 1)
+            optimized = kickmix.Circuit.from_file(str(dst))
+            for sample in range(8):
+                qubits = [(sample >> index) & 1 for index in range(3)]
+                self.assertEqual(
+                    _snapshot(kickmix, original, qubits, 0),
+                    _snapshot(kickmix, optimized, qubits, 0),
+                )
+
+    def test_wide_window_cancels_a_toffoli_pair_a_narrow_window_keeps(self) -> None:
+        kickmix = _kickmix()
+        text = "CCX q0 q1 q2\n" + "".join(f"X q{3 + index}\n" for index in range(40)) + "CCX q1 q0 q2\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.kmb"
+            narrow = Path(tmp) / "narrow.kmb"
+            wide = Path(tmp) / "wide.kmb"
+            original = kickmix.Circuit(text)
+            original.to_file(str(src), format="kmb")
+            from vqcc.optimize import optimize_artifact
+
+            missed = optimize_artifact(str(src), str(narrow), window=4, memory_budget_bytes=2_000_000)
+            self.assertFalse(missed.wrote)
+            caught = optimize_artifact(str(src), str(wide), window=64, memory_budget_bytes=2_000_000)
+            self.assertTrue(caught.wrote)
+            self.assertEqual(caught.after["toffoli_like"], 0)
+            optimized = kickmix.Circuit.from_file(str(wide))
+            for sample in range(16):
+                qubits = [(sample >> index) & 1 for index in range(4)]
+                self.assertEqual(
+                    _snapshot(kickmix, original, qubits, 0),
+                    _snapshot(kickmix, optimized, qubits, 0),
+                )
 
     def test_modules_do_not_import_kickmix(self) -> None:
         for name in ("optimize.py", "kickmix_file.py"):
             text = (ROOT / "vqcc" / name).read_text(encoding="utf-8")
             self.assertNotIn("import kickmix", text)
+
+
+class GatingTests(unittest.TestCase):
+    def test_instruction_drop_is_materialized_and_a_cost_increase_is_not(self) -> None:
+        from vqcc.kickmix_file import GateCounts
+        from vqcc.optimize import should_materialize
+
+        clifford = GateCounts(instructions=4)
+        smaller = GateCounts(instructions=2)
+        self.assertTrue(should_materialize(clifford, smaller, "dqi"))
+        self.assertTrue(should_materialize(clifford, smaller, "invsqrt"))
+        raised = GateCounts(toffoli_like=2, instructions=1)
+        baseline = GateCounts(toffoli_like=1, instructions=3)
+        self.assertFalse(should_materialize(baseline, raised, "dqi"))
+        self.assertFalse(should_materialize(baseline, raised, "dfthcsos"))
+        t_added = GateCounts(t_like=1, instructions=1)
+        t_base = GateCounts(t_like=0, instructions=2)
+        self.assertFalse(should_materialize(t_base, t_added, "invsqrt"))
+        self.assertTrue(should_materialize(t_base, t_added, "dqi"))
+        self.assertFalse(should_materialize(clifford, clifford))
+
+    def test_instruction_drop_is_sent_to_the_verifier(self) -> None:
+        kickmix = _kickmix()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data, runs = _dataset(root, _script(proposal_score=40))
+            source = data / "sample_submission" / "invsqrt.kmb"
+            kickmix.Circuit("X q0\nX q1\nX q0\n").to_file(str(source), format="kmb")
+            source_hash = _sha(source)
+            _prepare(runs, data)
+            _pipeline(["adapt", "--task", "invsqrt"], runs)
+            outcome = _pipeline(
+                ["optimize", "--task", "invsqrt", "--time-budget-s", "30", "--verify-timeout", "10"],
+                runs,
+            )
+            self.assertEqual(outcome["status"], "accepted")
+            self.assertGreater(outcome["candidates_written"], 0)
+            self.assertEqual(outcome["candidates_retained"], 1)
+            self.assertLess(outcome["retained_cost"], outcome["baseline_cost"])
+            attempt = outcome["attempts"][0]
+            self.assertEqual(attempt["verifier_status"], "pass")
+            self.assertGreater(attempt["before"]["instructions"], attempt["after"]["instructions"])
+            self.assertEqual(attempt["before"]["cost_units"], attempt["after"]["cost_units"])
+            self.assertEqual(_sha(source), source_hash)
+            self.assertIsNone(outcome["leaderboard_score"])
 
 
 class RetentionTests(unittest.TestCase):

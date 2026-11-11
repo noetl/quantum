@@ -399,6 +399,7 @@ def optimize_task(
                 window=window,
                 memory_budget_bytes=memory_budget_bytes,
                 deadline=time.monotonic() + remaining,
+                task=task,
             )
         except (KickmixFormatError, OptimizeBudgetError) as exc:
             _delete_path(proposal)
@@ -1024,7 +1025,10 @@ def _optimize_reason(status: str) -> str:
             "A proposal was built and the verifier did not accept it with a lower score. "
             "The previous artifact is still retained."
         ),
-        "unchanged": "The peephole found no proxy improvement. No candidate was written.",
+        "unchanged": (
+            "The rewrite did not shrink the circuit or the verifier-aligned cost proxy. "
+            "No candidate was written."
+        ),
         "budget": "The time budget stopped the loop before a candidate could be retained.",
         "blocked": "Optimization did not run to a retained candidate.",
         "not_rewritten": "The circuit could not be rewritten. The previous artifact was kept.",
