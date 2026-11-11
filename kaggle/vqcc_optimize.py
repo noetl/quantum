@@ -26,6 +26,9 @@ What to check in the run JSON:
   ``retained_cost`` than ``baseline_cost``, and ``competition_verified`` true.
 - ``rejected`` or ``unchanged`` leaves that task's artifact path on the
   baseline file. A rejected proposal is not the retained path.
+- ``unchanged`` means the rewrite did not shorten the circuit or lower that
+  task's static cost weight, so the verifier was not asked to score one.
+  A shorter circuit is scored even when the removed gates are Cliffords.
 - The other tasks' sha256 values are unchanged when you passed ``--task``.
 - No file was written under the read-only dataset mount.
 """
@@ -59,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", choices=TASKS, default=None)
     parser.add_argument("--time-budget-s", type=float, default=14400)
     parser.add_argument("--memory-budget-bytes", type=int, default=2 * 1024**3)
-    parser.add_argument("--window", type=int, default=32)
+    parser.add_argument("--window", type=int, default=4096)
     parser.add_argument("--max-candidates", type=int, default=1)
     args = parser.parse_args(argv)
     tasks = (args.task,) if args.task else TASKS

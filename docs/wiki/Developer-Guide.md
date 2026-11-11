@@ -7,7 +7,7 @@
 | `playbooks/vqcc_pipeline.yaml` | NoETL 5.3.2 playbook. |
 | `vqcc/pipeline.py` | CLI the shell steps call. `optimize` is the per-task loop. |
 | `vqcc/orchestrator.py` | Run state, import, structural fixtures, verify, optimize, cost, package gate. |
-| `vqcc/optimize.py` | Peephole and the "write only if the proxy improved" gate. |
+| `vqcc/optimize.py` | Streaming rewrite. A structural shrink or a lower static cost weight is written and scored. The verifier JSON score decides retention. |
 | `vqcc/kickmix_file.py` | Streaming `.kmb` / `.kmx` reader and writer. Does not import kickmix. |
 | `playbooks/vqcc_optimize.yaml` | Verify, then optimize each task. Packaging stays disarmed. |
 | `kaggle/vqcc_optimize.py` | Notebook entrypoint for the same steps. Does not submit. |
@@ -50,7 +50,7 @@ Distinguish the checks:
 | Orchestrator tests | Absent data writes no circuit. An imported file is hashed. A hook that exits 0 does not set `competition_verified`. |
 | `noetl.run` tests | The playbook's eleven steps execute and the record step matches the provenance file. |
 | `noetl` CLI test | The same eleven steps, from the literal CLI with default variables and no competition data. `leaderboard_score` is null, verification is `blocked`, and no zip is written. |
-| Optimization tests | Synthetic kickmix fixtures. A rejected or higher-score proposal does not replace the retained path. One task's run does not change the other tasks' bytes. An unchanged circuit writes no file. |
+| Optimization tests | Synthetic kickmix fixtures. A rejected or higher-score proposal does not replace the retained path. One task's run does not change the other tasks' bytes. An unchanged circuit writes no file. An instruction-count drop with an unchanged Toffoli weight is sent to the verifier. |
 | kickmix measurement | `operation_statistics` on a circuit this process built or loaded. Not the Kaggle verifier. |
 
 ## Adding a real verifier

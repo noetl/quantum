@@ -83,6 +83,29 @@ data directory.
 `valid: true`, findings empty. Schema digest
 `sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6`.
 
+## Verifier gate, 2026-11-11
+
+Issue #9 run `20261111T000307Z-0d076b2d` cancelled Clifford pairs (dqi lost
+about 1.1e6 instructions) and wrote no candidate, because the gate required
+the lexicographic key `(toffoli_like, t_like, high_rotations)` to fall. Those
+Cliffords are not in the published costs. The gate now writes a shorter
+circuit and sends it to the official verifier. Retention is still a PASS and
+a strictly lower JSON `score` (FR-004, FR-011).
+
+No competition data was mounted for this change. No official verifier score
+was produced. Fixture circuits checked with kickmix 1.0.0 simulation:
+
+- `CCX; X` on the Toffoli target; `CCX` becomes the `X`. Toffoli count 2 → 0.
+- Two `Z_POW 0.125` on one qubit become one T (`Z_POW 0.25`). Static weight
+  32 → 1. The phase matches.
+- `X q0; X q1; X q0` drops an instruction and leaves the static weight at 0.
+  The pipeline test sends that file to the stub verifier.
+
+`POST https://noetl.ai/api/dsl/validate` on 2026-11-11, server 3.156.2:
+both playbooks returned HTTP 200, `valid: true`, `execute_verdict: accept`,
+findings empty. Schema digest
+`sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be`.
+
 ## How to log a real attempt later
 
 ```bash
