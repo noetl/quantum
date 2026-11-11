@@ -1026,7 +1026,7 @@ def _optimize_reason(status: str) -> str:
             "The previous artifact is still retained."
         ),
         "unchanged": (
-            "The rewrite did not shrink the circuit or the verifier-aligned cost proxy. "
+            "The rewrite did not lower the charged gate weight or the qubit count. "
             "No candidate was written."
         ),
         "budget": "The time budget stopped the loop before a candidate could be retained.",

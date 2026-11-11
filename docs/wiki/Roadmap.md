@@ -31,8 +31,8 @@ the packaging gate. It is not an optimizer.
 5. [Issue 9](https://github.com/noetl/quantum/issues/9). The optimization
    loop is in `playbooks/vqcc_optimize.yaml`. It starts from a verified
    baseline, rewrites one task, and keeps the candidate only when the
-   official verifier accepts a strictly lower JSON score. A shorter circuit
-   is scored even if the removed gates are Cliffords. `tasks/*/generate.py`
+   official verifier accepts a strictly lower JSON score. A candidate is
+   written when the charged weight or the qubit count drops. `tasks/*/generate.py`
    still refuses to write a circuit, because that path is "build a new
    circuit," not "rewrite a verified one."
 6. [Issue 3](https://github.com/noetl/quantum/issues/3). Competition-quality

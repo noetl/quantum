@@ -35,7 +35,7 @@ costs stay uncomputed because `ε⁺` and the chemistry inputs are not invented.
 then rewrites that task only. A candidate replaces the retained artifact only
 when the official verifier accepts it and the JSON `score` is strictly lower
 (user story 2, FR-004, FR-011). The other tasks' files are not written. A
-pass that does not shrink the instruction count or the static cost weight
+pass that does not lower the charged weight or the qubit count
 writes no circuit (FR-003). Packaging stays disarmed. The Kaggle entrypoint
 is `python3 kaggle/vqcc_optimize.py`. It does not submit.
 
@@ -45,11 +45,14 @@ horizon (playbook default 4096) and only walks gates that share a qubit or a
 bit, plus condition barriers. Z rotations on one qubit merge at any distance
 until a gate they do not commute with. Arithmetic commutation lets a Toffoli
 slide past an X on its target, a phase on its controls, and other Toffolis
-that share those controls. invsqrt's static weight charges Toffolis, T gates,
-and fine rotations. dqi and dfthcsos charge Toffolis only (FR-006 and FR-007
-stay open on the factors in front of that count). A shrink that only removes
-free Cliffords is still sent to the verifier. A rewrite that adds Toffolis is
-not written.
+that share those controls. A clean Toffoli uncompute whose target is used in
+between is replaced by kickmix `HMR` plus a classically controlled `CZ`
+(`del_and`); the compute Toffoli stays. invsqrt's static weight charges
+Toffolis, T gates, and fine rotations. dqi and dfthcsos charge Toffolis only
+(FR-006 and FR-007 stay open on the factors in front of that count). A file
+is written when that weight drops or when the qubit count drops. A shrink
+that only removes free Cliffords, and does not free a qubit id, is not sent
+to the verifier. A rewrite that adds Toffolis is not written.
 
 ## What is not done
 

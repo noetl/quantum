@@ -7,7 +7,7 @@
 | `playbooks/vqcc_pipeline.yaml` | NoETL 5.3.2 playbook. |
 | `vqcc/pipeline.py` | CLI the shell steps call. `optimize` is the per-task loop. |
 | `vqcc/orchestrator.py` | Run state, import, structural fixtures, verify, optimize, cost, package gate. |
-| `vqcc/optimize.py` | Streaming rewrite. A structural shrink or a lower static cost weight is written and scored. The verifier JSON score decides retention. |
+| `vqcc/optimize.py` | Streaming rewrite. A lower charged weight or a smaller qubit count is written. The verifier JSON score decides retention. |
 | `vqcc/kickmix_file.py` | Streaming `.kmb` / `.kmx` reader and writer. Does not import kickmix. |
 | `playbooks/vqcc_optimize.yaml` | Verify, then optimize each task. Packaging stays disarmed. |
 | `kaggle/vqcc_optimize.py` | Notebook entrypoint for the same steps. Does not submit. |

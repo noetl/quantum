@@ -211,9 +211,24 @@ class PeepholeTests(unittest.TestCase):
                 _snapshot(kickmix, optimized, [1], 0),
             )
 
-    def test_clifford_shrink_is_written_even_though_cost_units_stay_put(self) -> None:
+    def test_clifford_shrink_that_keeps_q_is_not_written(self) -> None:
         kickmix = _kickmix()
         text = "X q0\nX q1\nX q0\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.kmb"
+            dst = Path(tmp) / "out.kmb"
+            kickmix.Circuit(text).to_file(str(src), format="kmb")
+            from vqcc.optimize import optimize_artifact
+
+            result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
+            self.assertFalse(result.wrote)
+            self.assertFalse(dst.exists())
+            self.assertEqual(result.after["cost_units"], result.before["cost_units"])
+            self.assertEqual(result.after["qubits"], result.before["qubits"])
+
+    def test_freeing_the_highest_qubit_is_written_and_matches(self) -> None:
+        kickmix = _kickmix()
+        text = "X q0\nX q5\nX q5\n"
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "in.kmb"
             dst = Path(tmp) / "out.kmb"
@@ -223,17 +238,15 @@ class PeepholeTests(unittest.TestCase):
 
             result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
             self.assertTrue(result.wrote)
-            self.assertLess(result.after["instructions"], result.before["instructions"])
+            self.assertLess(result.after["qubits"], result.before["qubits"])
             self.assertEqual(result.after["cost_units"], result.before["cost_units"])
-            self.assertEqual(result.after["toffoli_like"], 0)
             optimized = kickmix.Circuit.from_file(str(dst))
-            self.assertEqual(optimized.num_qubits, original.num_qubits)
-            for sample in range(4):
-                qubits = [(sample >> index) & 1 for index in range(2)]
-                self.assertEqual(
-                    _snapshot(kickmix, original, qubits, 0),
-                    _snapshot(kickmix, optimized, qubits, 0),
-                )
+            self.assertEqual(optimized.num_qubits, 1)
+            for value in (0, 1):
+                original_shot = _snapshot(kickmix, original, [value, 0, 0, 0, 0, 0], 0)
+                optimized_shot = _snapshot(kickmix, optimized, [value], 0)
+                self.assertEqual(original_shot[0][:1], optimized_shot[0])
+                self.assertEqual(original_shot[2], optimized_shot[2])
 
     def test_toffoli_cancels_across_x_on_the_target_and_keeps_qubit_width(self) -> None:
         kickmix = _kickmix()
@@ -274,12 +287,15 @@ class PeepholeTests(unittest.TestCase):
             self.assertEqual(result.after["high_rotations"], 0)
             self.assertEqual(result.after["t_like"], 1)
             optimized = kickmix.Circuit.from_file(str(dst))
+            self.assertEqual(optimized.num_qubits, 1)
+            self.assertLess(result.after["qubits"], result.before["qubits"])
             for sample in range(4):
-                qubits = [(sample >> index) & 1 for index in range(2)]
-                self.assertEqual(
-                    _snapshot(kickmix, original, qubits, 0),
-                    _snapshot(kickmix, optimized, qubits, 0),
-                )
+                values = [(sample >> index) & 1 for index in range(2)]
+                original_shot = _snapshot(kickmix, original, values, 0)
+                optimized_shot = _snapshot(kickmix, optimized, values[:1], 0)
+                self.assertEqual(original_shot[0][:1], optimized_shot[0])
+                self.assertEqual(original_shot[0][1], bool(values[1]))
+                self.assertEqual(original_shot[2], optimized_shot[2])
 
     def test_rotation_does_not_merge_across_a_toffoli_target(self) -> None:
         kickmix = _kickmix()
@@ -307,9 +323,11 @@ class PeepholeTests(unittest.TestCase):
             from vqcc.optimize import optimize_artifact
 
             result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
-            self.assertTrue(result.wrote)
+            self.assertFalse(result.wrote)
             self.assertEqual(result.stats["cancelled_pairs"], 1)
-            optimized = kickmix.Circuit.from_file(str(dst))
+            self.assertEqual(result.after["cost_units"], result.before["cost_units"])
+            self.assertEqual(result.after["qubits"], result.before["qubits"])
+            optimized = kickmix.Circuit("CX q0 q2\n")
             for sample in range(8):
                 qubits = [(sample >> index) & 1 for index in range(3)]
                 self.assertEqual(
@@ -341,6 +359,98 @@ class PeepholeTests(unittest.TestCase):
                     _snapshot(kickmix, optimized, qubits, 0),
                 )
 
+    def test_measurement_uncompute_matches_kickmix_simulation(self) -> None:
+        kickmix = _kickmix()
+        for label in ("use", "phase", "nested", "cz"):
+            with self.subTest(label=label):
+                _assert_and_uncompute(self, kickmix, label)
+
+    def test_named_target_is_not_measurement_uncomputed(self) -> None:
+        kickmix = _kickmix()
+        builder = kickmix.CircuitBuilder()
+        controls = builder.create_quantum_register(2, "x")
+        target = builder.create_quantum_register(1, "kept")
+        out = builder.alloc_qubits(1)[0]
+        builder.ccx(controls[0], controls[1], target[0])
+        builder.cx(target[0], out)
+        builder.ccx(controls[0], controls[1], target[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.kmb"
+            dst = Path(tmp) / "out.kmb"
+            builder.finish_circuit().to_file(str(src), format="kmb")
+            from vqcc.optimize import optimize_artifact
+
+            result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
+            self.assertFalse(result.wrote)
+            self.assertEqual(result.stats["and_uncomputes"], 0)
+            self.assertFalse(dst.exists())
+
+    def test_reset_then_and_uncompute_on_a_named_qubit(self) -> None:
+        kickmix = _kickmix()
+        builder = kickmix.CircuitBuilder()
+        controls = builder.create_quantum_register(2, "x")
+        target = builder.create_quantum_register(1, "work")
+        out = builder.alloc_qubits(1)[0]
+        builder.reset(target[0])
+        builder.ccx(controls[0], controls[1], target[0])
+        builder.cx(target[0], out)
+        builder.ccx(controls[0], controls[1], target[0])
+        original = builder.finish_circuit()
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.kmb"
+            dst = Path(tmp) / "out.kmb"
+            original.to_file(str(src), format="kmb")
+            from vqcc.optimize import optimize_artifact
+
+            result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
+            self.assertTrue(result.wrote)
+            self.assertEqual(result.stats["and_uncomputes"], 1)
+            self.assertLess(result.after["toffoli_like"], result.before["toffoli_like"])
+            optimized = kickmix.Circuit.from_file(str(dst))
+            _assert_same_shots(self, kickmix, original, optimized, inputs=2)
+
+    def test_conditional_and_push_uncompute_matches(self) -> None:
+        kickmix = _kickmix()
+        explicit = kickmix.Circuit(
+            "\n".join(
+                [
+                    "APPEND_TO_REGISTER q0 r0",
+                    "APPEND_TO_REGISTER q1 r0",
+                    'REGISTER r0 "x"',
+                    "APPEND_TO_REGISTER b0 r1",
+                    'REGISTER r1 "flag"',
+                    "CCX q0 q1 q2 if b0",
+                    "CX q2 q3 if b0",
+                    "CCX q0 q1 q2 if b0",
+                    "",
+                ]
+            )
+        )
+        pushed_builder = kickmix.CircuitBuilder()
+        controls = pushed_builder.create_quantum_register(2, "x")
+        flag = pushed_builder.create_classical_register(1, "flag")
+        anc = pushed_builder.alloc_qubits(1)[0]
+        out = pushed_builder.alloc_qubits(1)[0]
+        pushed_builder.push_condition(flag[0])
+        pushed_builder.ccx(controls[0], controls[1], anc)
+        pushed_builder.cx(anc, out)
+        pushed_builder.ccx(controls[0], controls[1], anc)
+        pushed_builder.pop_condition()
+        pushed = pushed_builder.finish_circuit()
+        for label, original in (("explicit", explicit), ("push", pushed)):
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    src = Path(tmp) / "in.kmb"
+                    dst = Path(tmp) / "out.kmb"
+                    original.to_file(str(src), format="kmb")
+                    from vqcc.optimize import optimize_artifact
+
+                    result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
+                    self.assertTrue(result.wrote, result.reason)
+                    self.assertGreaterEqual(result.stats["and_uncomputes"], 1)
+                    optimized = kickmix.Circuit.from_file(str(dst))
+                    _assert_same_shots(self, kickmix, original, optimized, inputs=2, flag=True)
+
     def test_modules_do_not_import_kickmix(self) -> None:
         for name in ("optimize.py", "kickmix_file.py"):
             text = (ROOT / "vqcc" / name).read_text(encoding="utf-8")
@@ -354,8 +464,11 @@ class GatingTests(unittest.TestCase):
 
         clifford = GateCounts(instructions=4)
         smaller = GateCounts(instructions=2)
-        self.assertTrue(should_materialize(clifford, smaller, "dqi"))
-        self.assertTrue(should_materialize(clifford, smaller, "invsqrt"))
+        self.assertFalse(should_materialize(clifford, smaller, "dqi"))
+        self.assertFalse(should_materialize(clifford, smaller, "invsqrt"))
+        self.assertTrue(
+            should_materialize(clifford, smaller, "dqi", qubits_before=8, qubits_after=7)
+        )
         raised = GateCounts(toffoli_like=2, instructions=1)
         baseline = GateCounts(toffoli_like=1, instructions=3)
         self.assertFalse(should_materialize(baseline, raised, "dqi"))
@@ -363,7 +476,7 @@ class GatingTests(unittest.TestCase):
         t_added = GateCounts(t_like=1, instructions=1)
         t_base = GateCounts(t_like=0, instructions=2)
         self.assertFalse(should_materialize(t_base, t_added, "invsqrt"))
-        self.assertTrue(should_materialize(t_base, t_added, "dqi"))
+        self.assertFalse(should_materialize(t_base, t_added, "dqi"))
         self.assertFalse(should_materialize(clifford, clifford))
 
     def test_instruction_drop_is_sent_to_the_verifier(self) -> None:
@@ -372,7 +485,7 @@ class GatingTests(unittest.TestCase):
             root = Path(tmp)
             data, runs = _dataset(root, _script(proposal_score=40))
             source = data / "sample_submission" / "invsqrt.kmb"
-            kickmix.Circuit("X q0\nX q1\nX q0\n").to_file(str(source), format="kmb")
+            kickmix.Circuit("X q0\nX q5\nX q5\n").to_file(str(source), format="kmb")
             source_hash = _sha(source)
             _prepare(runs, data)
             _pipeline(["adapt", "--task", "invsqrt"], runs)
@@ -386,7 +499,7 @@ class GatingTests(unittest.TestCase):
             self.assertLess(outcome["retained_cost"], outcome["baseline_cost"])
             attempt = outcome["attempts"][0]
             self.assertEqual(attempt["verifier_status"], "pass")
-            self.assertGreater(attempt["before"]["instructions"], attempt["after"]["instructions"])
+            self.assertGreater(attempt["before"]["qubits"], attempt["after"]["qubits"])
             self.assertEqual(attempt["before"]["cost_units"], attempt["after"]["cost_units"])
             self.assertEqual(_sha(source), source_hash)
             self.assertIsNone(outcome["leaderboard_score"])
@@ -649,6 +762,74 @@ class PlaybookTests(unittest.TestCase):
             run_dir = Path(final["run_dir"])
             self.assertEqual(list(run_dir.rglob("*.kmb")), [])
             self.assertEqual(list(run_dir.rglob("*.kmx")), [])
+
+
+def _assert_and_uncompute(test: unittest.TestCase, kickmix, label: str) -> None:
+    builder = kickmix.CircuitBuilder()
+    controls = builder.create_quantum_register(2, "x")
+    anc = builder.alloc_qubits(1)[0]
+    out = builder.alloc_qubits(1)[0]
+    extra = builder.alloc_qubits(1)[0]
+    builder.ccx(controls[0], controls[1], anc)
+    if label == "use":
+        builder.cx(anc, out)
+    elif label == "phase":
+        builder.z(anc)
+        builder.cx(anc, out)
+    elif label == "cz":
+        builder.cz(anc, out)
+    elif label == "nested":
+        builder.ccx(anc, controls[0], extra)
+        builder.cx(extra, out)
+        builder.ccx(anc, controls[0], extra)
+    else:
+        raise AssertionError(label)
+    builder.ccx(controls[0], controls[1], anc)
+    original = builder.finish_circuit()
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "in.kmb"
+        dst = Path(tmp) / "out.kmb"
+        original.to_file(str(src), format="kmb")
+        from vqcc.optimize import optimize_artifact
+
+        result = optimize_artifact(str(src), str(dst), window=8, memory_budget_bytes=2_000_000)
+        test.assertTrue(result.wrote, result.reason)
+        test.assertGreaterEqual(result.stats["and_uncomputes"], 1)
+        test.assertLess(result.after["toffoli_like"], result.before["toffoli_like"])
+        optimized = kickmix.Circuit.from_file(str(dst))
+        _assert_same_shots(test, kickmix, original, optimized, inputs=2)
+
+
+def _assert_same_shots(test, kickmix, original, optimized, inputs: int, flag: bool = False) -> None:
+    width = 1 << inputs
+    if flag:
+        width <<= 1
+    for mask in range(width):
+        values = [(mask >> index) & 1 for index in range(inputs)]
+        bit = (mask >> inputs) & 1 if flag else 0
+        left = _shots(kickmix, original, values, bit, shots=12)
+        right = _shots(kickmix, optimized, values, bit, shots=12)
+        test.assertEqual(len(left), 1, left)
+        test.assertEqual(left, right, (values, bit, left, right))
+
+
+def _shots(kickmix, circuit, values: list[int], bit: int, shots: int):
+    sim = kickmix.Simulator(batch_size=shots)
+    for index, value in enumerate(values):
+        for shot in range(shots):
+            sim.write_within_shot(kickmix.q(index), shot, bool(value))
+    if circuit.num_bits:
+        for shot in range(shots):
+            sim.write_within_shot(kickmix.b(0), shot, bool(bit))
+    sim.do(circuit)
+    seen = set()
+    for shot in range(shots):
+        qubits = tuple(
+            bool(sim.read_within_shot(kickmix.q(index), shot, out=int))
+            for index in range(circuit.num_qubits)
+        )
+        seen.add((qubits, str(sim.read_shot_phase(shot))))
+    return seen
 
 
 def _snapshot(kickmix, circuit, qubits: list[int], bit: int):

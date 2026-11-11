@@ -167,8 +167,8 @@ What to check in `runs/<id>/provenance.json`:
 
 The reference costs from the private seed-20261108 run (lower is better) are
 external evidence in `vqcc/official_verifier.py`, not a result of this
-repository. An `unchanged` status means the rewrite did not shorten the
-circuit or lower that task's static cost weight, so no candidate was scored.
+repository. An `unchanged` status means the rewrite did not lower the charged weight
+or the qubit count, so no candidate was scored.
 A `rejected` status means a candidate was scored and the verifier did not
 return a strictly lower PASS score. The 2026-11-11 run
 `20261111T000307Z-0d076b2d` was `unchanged` on every task because Clifford
