@@ -1,6 +1,7 @@
 # Per-task optimization after a verified baseline.
-# Validated 2026-11-11: POST https://noetl.ai/api/dsl/validate
-# server 3.156.2, HTTP 200, valid true, execute_verdict accept, findings empty.
+# Validated 2026-11-12: POST https://noetl.ai/api/dsl/validate
+# server 3.156.2, HTTP 200, valid true, findings empty.
+# The 2026-11-11 check on the same server reported execute_verdict accept.
 # schema_digest sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be
 # The 2026-11-10 check on server 3.156.1 used the previous digest
 # sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6.
@@ -13,11 +14,11 @@
 #
 # Each optimize step reads only that task's retained circuit, writes a candidate
 # under runs/, and replaces the retained artifact only when the official verifier
-# accepts it and the JSON score is strictly lower. A smaller instruction stream
-# is written and scored even when the cancelled gates are free Cliffords. A
-# rewrite that raises that task's static Toffoli weight (and, for invsqrt, the
-# T / fine-rotation weight) is not written. This playbook does not arm
-# submission packaging. Nothing in this file submits to Kaggle.
+# accepts it and the JSON score is strictly lower. The step also logs a structure
+# profile of the input (repeated blocks, Toffoli shape, qubit lifetimes). A
+# candidate is written only when the charged weight or the qubit count drops.
+# A Clifford-only shrink is not written. This playbook does not arm submission
+# packaging. Nothing in this file submits to Kaggle.
 apiVersion: noetl.io/v2
 kind: Playbook
 metadata:
@@ -151,9 +152,9 @@ workflow:
 
   - step: optimize_invsqrt
     desc: >-
-      Rewrite invsqrt only (Toffoli cancellation, commutation, Z_POW merge).
-      A smaller circuit is scored by the official verifier. Keep it only when
-      that verifier accepts it and the JSON score is strictly lower.
+      Profile invsqrt, then rewrite it only (cancellation, shared-control
+      Toffoli factor, qubit reuse after a verified reset). Keep a candidate
+      only when the verifier accepts it and the JSON score is strictly lower.
       Do not touch dqi or dfthcsos.
     tool:
       kind: shell
@@ -172,8 +173,9 @@ workflow:
 
   - step: optimize_dqi
     desc: >-
-      Rewrite dqi only, streaming the kmb. Toffoli cancellation is the cost
-      signal. A rejected proposal does not replace the retained dqi artifact.
+      Profile dqi, then rewrite it only, streaming the kmb. Shared-control
+      factoring and qubit reuse are the cost signals. A rejected proposal
+      does not replace the retained dqi artifact.
     tool:
       kind: shell
       cmds:
@@ -191,8 +193,8 @@ workflow:
 
   - step: optimize_dfthcsos
     desc: >-
-      Rewrite dfthcsos angle circuits only. submission.npz is copied, not
-      recomputed. Keep the directory only if the verifier score drops.
+      Profile and rewrite dfthcsos angle circuits only. submission.npz is
+      copied, not recomputed. Keep the directory only if the verifier score drops.
     tool:
       kind: shell
       cmds:

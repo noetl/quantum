@@ -47,12 +47,18 @@ until a gate they do not commute with. Arithmetic commutation lets a Toffoli
 slide past an X on its target, a phase on its controls, and other Toffolis
 that share those controls. A clean Toffoli uncompute whose target is used in
 between is replaced by kickmix `HMR` plus a classically controlled `CZ`
-(`del_and`); the compute Toffoli stays. invsqrt's static weight charges
-Toffolis, T gates, and fine rotations. dqi and dfthcsos charge Toffolis only
-(FR-006 and FR-007 stay open on the factors in front of that count). A file
-is written when that weight drops or when the qubit count drops. A shrink
-that only removes free Cliffords, and does not free a qubit id, is not sent
-to the verifier. A rewrite that adds Toffolis is not written.
+(`del_and`); the compute Toffoli stays. A second `CCX` of that same AND,
+onto a different target, is replaced by `CX`. Scratch ids are reused after
+an unconditional reset, or folded into a real gap, and only when a named
+register tells system ids from scratch. The optimize step logs a structure
+profile (`structure` in the step JSON): opcodes, lifetimes, peak live
+qubits, and repeated blocks. See [Circuit structure](Circuit-Structure).
+invsqrt's static weight charges Toffolis, T gates, and fine rotations. dqi
+and dfthcsos charge Toffolis only (FR-006 and FR-007 stay open on the
+factors in front of that count). A file is written when that weight drops
+or when the qubit count drops. A shrink that only removes free Cliffords,
+and does not free a qubit id, is not sent to the verifier. A rewrite that
+adds Toffolis is not written.
 
 ## What is not done
 
@@ -71,6 +77,7 @@ to the verifier. A rewrite that adds Toffolis is not written.
 - [Developer Guide](Developer-Guide)
 - [Spec and issue traceability](Spec-and-Issue-Traceability)
 - [Experiments](Experiments)
+- [Circuit structure](Circuit-Structure)
 - [Roadmap](Roadmap)
 
 A copy of these pages is versioned in the repository at `docs/wiki/`.

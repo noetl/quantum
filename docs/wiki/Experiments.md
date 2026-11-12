@@ -142,6 +142,44 @@ No competition data was mounted. No official verifier score was produced.
 If a dfthcsos angle file has no clean AND uncompute, the run still writes
 no candidate; `and_uncomputes` in the attempt stats is the count.
 
+## Structural passes, 2026-11-12
+
+Issue 19. No competition data was mounted. No official verifier was run on
+a reference circuit. No Local or LB cell was written.
+
+Version 8 (external notebook `20261112T030658Z-9813e023`, main `53304c8`)
+left every official score at the baseline. The measurement-uncompute pass
+recorded `and_uncomputes: 0` for invsqrt, dqi, and dfthcsos. Clifford
+cancellation changed the instruction count and not the charged weight, so
+no candidate was sent. Details and the kickmix-idiom profiles are in
+[Circuit structure](Circuit-Structure).
+
+What this environment did run, kickmix 1.0.0, on circuits it built:
+
+- A clean AND computed twice, second target different: one `CCX` becomes
+  `CX`. Toffoli count 2 → 1. Kickmix simulation of the wires matches.
+- The same factor with a `Z` on the AND target. Wires match.
+- An `X` on the AND target: the factor does not fire, and no file is written.
+- Scratch ids 8 and 12, with named qubits 0..2 and an unconditional `R`
+  between the two lifetimes: header width 13 → 4. On 16 shots per input,
+  the named bits match the classical function and every other qubit is
+  `|0>`. `R` still kicks a random phase; that phase is not a score.
+- 4-control `multi_controlled_x`, 4-bit `iadd`, and 3-bit `init_gf2_mul`:
+  the profile's peak live count equals the header, shared-control
+  candidates are 0, and the optimize step writes no file. `iadd` stays at
+  3 Toffolis and `Q` 10. `init_gf2_mul` stays at 7 Toffolis and `Q` 9.
+
+`python3 -m unittest discover -s tests -t .` with `noetl==5.3.2` and
+`kickmix==1.0.0`: 87 tests, 1 skipped. The skip is the kickmix-missing
+guard, which does not run when kickmix is installed.
+
+No effect on the version 8 scores is claimed. The sample files are not
+here. The next Kaggle optimize run logs `structure` so those files can be
+read the same way. A lower score is not expected unless that report shows
+shared-control candidates or reuse headroom. dqi squares `Q`, which is why
+headroom would matter, and why a circuit whose peak live count already
+equals its header will not move.
+
 ## How to log a real attempt later
 
 ```bash

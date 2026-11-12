@@ -140,6 +140,19 @@ write, because the published costs do not charge the same gates.
   reset it. Named register qubits are not assumed clean. `PUSH_CONDITION`
   is part of the match: the uncompute has to sit under the same condition
   stack, and the replacement stays inside that stack.
+- Shared-control factoring. While that clean AND is still on its target, a
+  later `CCX` with the same controls and a different target is replaced by
+  `CX` from the AND target. The compute `CCX` stays. A phase on the AND
+  target does not block the copy. A bit flip of the target or of a control
+  drops the record, and the second `CCX` is left alone.
+- Qubit lifetime reuse. Scratch wires are renamed onto an id that is known
+  `|0>`: a real gap in the id space, or an id freed by an unconditional
+  `R` or `HMR`. The physical id is fixed for one lifetime, so `SWAP` and
+  `CSWAP` are renamed like any other gate. Named register ids are never
+  renumbered and are never given to scratch. Without a named quantum
+  register the pass is off. A conditional reset does not free an id. The
+  profile's `reuse_headroom_vs_header` is the gap between the header and
+  the peak live set; it is not itself a score.
 
 What gets a verifier call (FR-003, FR-004):
 
@@ -151,6 +164,10 @@ What gets a verifier call (FR-003, FR-004):
   named by a register or used by an emitted gate. A scratch id that the
   rewrite no longer touches is not padded with a pair of `Z` gates.
   Register ids stay, so the named input layout is not renumbered.
+  For a dfthcsos directory, a drop in the sum of per-file widths is also
+  sent. The official dfthcsos `Q` is not that per-file width.
+- The step JSON includes `structure`, the profile from `vqcc/profile.py`.
+  The profile is written even when no candidate is sent to the verifier.
 - Not a higher static weight, and not a wider header.
 - Not a shorter instruction stream whose charged weight and `Q` are
   unchanged. Kaggle version 7 sent those Clifford-only shrinks to the
