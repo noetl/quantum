@@ -127,24 +127,36 @@ write, because the published costs do not charge the same gates.
 - A later `BIT_STORE0` or `BIT_STORE1` replaces an earlier store of the same
   bit under the same condition. An adjacent `PUSH_CONDITION` / `POP_CONDITION`
   with nothing between them is removed.
+- Measurement uncompute of one clean Toffoli. A `CCX` whose target was `|0>`
+  before the compute, and whose controls and target are not bit-flipped
+  before the matching `CCX`, is an AND uncompute. If a gate between them does
+  not commute with that `CCX` (the target was used), or the pair sits farther
+  apart than the cancellation horizon, the second `CCX` is replaced by
+  `BIT_STORE0`, `HMR`, and `CZ` on the two controls conditioned on the
+  measurement bit. That is kickmix `del_and`. The compute `CCX` stays. A pair
+  the horizon can still delete entirely is left for that deletion, which
+  removes two Toffolis instead of one. A qubit is known `|0>` only when it
+  is unnamed scratch in a file that has registers, or when `R` or `HMR` just
+  reset it. Named register qubits are not assumed clean. `PUSH_CONDITION`
+  is part of the match: the uncompute has to sit under the same condition
+  stack, and the replacement stays inside that stack.
 
 What gets a verifier call (FR-003, FR-004):
 
-- Fewer instructions, and the static weight did not go up. This is the case
-  the 2026-11-11 Kaggle run missed: Clifford pairs cancelled, the instruction
-  count fell, and `(toffoli_like, t_like, high_rotations)` did not, so no
-  file was written.
-- Or a lower static weight at the same size.
-- Not a higher static weight. invsqrt's weight is `4*Toffoli + T + 16*fine`
+- A lower static weight. invsqrt's weight is `4*Toffoli + T + 16*fine`
   (16 is kickmix's 4-Toffoli synthesis stand-in, not the shot-mean score).
   dqi and dfthcsos use `4*Toffoli` only. Conditional gates are still counted
   statically; the verifier's shot mean is the score.
+- Or a smaller qubit count. `Q` is one past the highest id that is still
+  named by a register or used by an emitted gate. A scratch id that the
+  rewrite no longer touches is not padded with a pair of `Z` gates.
+  Register ids stay, so the named input layout is not renumbered.
+- Not a higher static weight, and not a wider header.
+- Not a shorter instruction stream whose charged weight and `Q` are
+  unchanged. Kaggle version 7 sent those Clifford-only shrinks to the
+  verifier; the JSON scores did not move.
 
-`Q` is the largest qubit id plus one. kickmix rejects a header that is not
-`max_id + 1`. When a cancelled gate was the only user of the highest id, the
-rewrite appends two `Z` gates on that id. Two `Z` gates are identity and
-free, so the header width stays and the verifier's input layout is not
-renumbered. `submission.npz` is still a byte copy.
+`submission.npz` is still a byte copy.
 
 Retention uses the official verifier JSON `score`. Lower is better: user
 story 2 asks for a cheaper circuit, and the hub ratio is reference-cost over

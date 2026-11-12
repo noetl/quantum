@@ -32,14 +32,20 @@ Kickmix charges a conditional gate only on the shots where it fires, and
 ``Q`` is the largest qubit id plus one. This module cannot see the shot
 mean, so the local weights are a static stand-in, not a score.
 
-The run in issue #9 (``20261111T000307Z-0d076b2d``) cancelled Clifford pairs
-and dropped the instruction count (dqi by about 1.1e6) while
-``(toffoli_like, t_like, high_rotations)`` stayed put, so no file was
-written and the verifier never scored the circuit. Those three counters
-are not the verifier's key: Cliffords are free, and a fine rotation costs
-more than a T. A structural shrink (fewer instructions) is now written and
-scored. A rewrite that raises the task's static cost is not written.
-Acceptance is still an authoritative PASS and a strictly lower JSON score.
+The run in issue #9 cancelled Clifford pairs and left the charged counts
+unchanged, so no file was written. A later gate wrote those shorter
+circuits. Kaggle version 7 (issue #9, run ``20261111T052032Z-e1a4aedc``)
+then scored them: the verifier passed and the JSON scores did not move,
+because the deleted gates were Cliffords. This module no longer sends a
+candidate whose charged weight and qubit count are unchanged.
+
+A clean Toffoli uncompute whose target was used in between does not
+commute, so the cancellation horizon cannot see it. Kickmix's own
+``del_and`` replaces that uncompute with ``HMR`` plus a ``CZ`` conditioned
+on the measurement bit. The replacement is applied only when the target
+is known to have been ``|0>`` before the compute (unnamed scratch when the
+file has registers, or a qubit just reset by ``R`` or ``HMR``). Named
+register qubits are not assumed to start at ``|0>``.
 """
 
 from __future__ import annotations
@@ -65,6 +71,7 @@ from vqcc.kickmix_file import (
     iter_kmb_ops,
     open_kmb,
     read_kmx_ops,
+    register_ids,
 )
 
 # Gates that are their own inverse when the targets and condition match.
@@ -93,6 +100,7 @@ class PassStats:
     store_overwrites: int = 0
     empty_conditions: int = 0
     dropped_identity_rotations: int = 0
+    and_uncomputes: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -101,6 +109,7 @@ class PassStats:
             "store_overwrites": self.store_overwrites,
             "empty_conditions": self.empty_conditions,
             "dropped_identity_rotations": self.dropped_identity_rotations,
+            "and_uncomputes": self.and_uncomputes,
         }
 
 
@@ -129,8 +138,9 @@ class RewriteResult:
             "cost_model": _cost_model(self.task),
             "proxy_note": (
                 "before/after include a static cost_units stand-in for the "
-                "gates the official score charges, plus the instruction count. "
-                "Neither number is a verifier score or a leaderboard score. "
+                "gates the official score charges, the instruction count, and "
+                "the qubit count. None of these is a verifier score or a "
+                "leaderboard score. "
                 "A written file is kept only after the verifier PASS score is strictly lower."
             ),
         }
@@ -139,6 +149,7 @@ class RewriteResult:
 _PASS_NAMES = (
     "indexed_self_inverse_cancellation",
     "arithmetic_commutation",
+    "measurement_and_uncompute",
     "deferred_z_rotation_merge",
     "store_overwrite",
     "empty_condition",
@@ -150,19 +161,19 @@ def _cost_model(task: str | None) -> str:
         return (
             "dqi charges R(eps) * Q^2 * Toffoli (paper equation 43; FR-006 is open on R). "
             "The local regression veto is the Toffoli count. T and fine rotations are not in T. "
-            "Q stays at the source header width."
+            "Q is the highest qubit id still named or used. A freed scratch id is not padded."
         )
     if task == "dfthcsos":
         return (
             "dfthcsos charges lambda_eff * Toffoli * Q (FR-007 is open on lambda_eff). "
             "The local regression veto is the Toffoli count. submission.npz is copied, not rewritten. "
-            "Each angle file keeps its source header width."
+            "Each angle file's Q is the highest id still named or used."
         )
     return (
         "invsqrt charges Q * (Toffoli + T/4), and finer Z_POW angles are synthesis-priced. "
         "Local weights: Toffoli=4, level-3 Z_POW=1, level>=4 Z_POW=16 "
         "(16 is the kickmix 4-Toffoli synthesis stand-in, not a verifier score). "
-        "Q stays at the source header width."
+        "Q is the highest qubit id still named or used. A freed scratch id is not padded."
     )
 
 
@@ -179,26 +190,40 @@ def _cost_units(counts: GateCounts, task: str | None) -> int:
     return toffoli + _T_UNIT * counts.t_like + _FINE_UNIT * counts.high_rotations
 
 
-def should_materialize(before: GateCounts, after: GateCounts, task: str | None = None) -> bool:
+def should_materialize(
+    before: GateCounts,
+    after: GateCounts,
+    task: str | None = None,
+    *,
+    qubits_before: int | None = None,
+    qubits_after: int | None = None,
+) -> bool:
     """Return whether the rewrite is worth an official verifier call.
 
-    A strictly smaller instruction stream is a structural reduction and is
-    written even when the cancelled gates are free Cliffords. A rewrite that
-    raises the task's static cost is not written: the published formulas
-    cannot score that as an improvement, and the verifier budget stays on
-    the baseline. Equal size and equal cost writes nothing (FR-003).
+    The published scores charge Toffoli count, and for invsqrt also T and
+    fine ``Z_POW``. ``Q`` multiplies every task and is squared for dqi.
+    Kaggle version 7 showed that a shorter instruction stream of free
+    Cliffords does not move the JSON score, so that case is not written
+    (FR-003, FR-004). A higher charged weight or a wider header is not
+    written. A lower charged weight or a smaller qubit count is written.
     """
 
     if _cost_units(after, task) > _cost_units(before, task):
         return False
-    if after.instructions < before.instructions:
+    if qubits_before is not None and qubits_after is not None and qubits_after > qubits_before:
+        return False
+    if _cost_units(after, task) < _cost_units(before, task):
         return True
-    return _cost_units(after, task) < _cost_units(before, task)
+    if qubits_before is not None and qubits_after is not None and qubits_after < qubits_before:
+        return True
+    return False
 
 
-def _payload(counts: GateCounts, task: str | None) -> dict:
+def _payload(counts: GateCounts, task: str | None, qubits: int | None = None) -> dict:
     data = counts.as_dict()
     data["cost_units"] = _cost_units(counts, task)
+    if qubits is not None:
+        data["qubits"] = qubits
     return data
 
 
@@ -229,11 +254,239 @@ def normalize(op: Op, stats: PassStats | None = None) -> Op | None:
     return op
 
 
+def _value_writes(op: Op) -> set[int]:
+    """Qubits whose computational bit this op can change."""
+
+    if op.name == "X" and op.qubits:
+        return {op.qubits[0]}
+    if op.name == "CX" and len(op.qubits) == 2:
+        return {op.qubits[1]}
+    if op.name == "CCX" and len(op.qubits) == 3:
+        return {op.qubits[2]}
+    if op.name == "SWAP" and len(op.qubits) == 2:
+        return {op.qubits[0], op.qubits[1]}
+    if op.name == "CSWAP" and len(op.qubits) == 3:
+        return {op.qubits[1], op.qubits[2]}
+    if op.name in {"R", "HMR"} and op.qubits:
+        return {op.qubits[0]}
+    return set()
+
+
+def _bit_writes(op: Op) -> set[int]:
+    if op.name in {"BIT_STORE0", "BIT_STORE1", "BIT_INVERT"} and op.bits:
+        return {op.bits[0]}
+    if op.name == "HMR" and op.bits:
+        return {op.bits[0]}
+    return set()
+
+
+class _OpenAnd:
+    __slots__ = ("target", "order", "controls", "stack", "explicit", "blocked", "born")
+
+    def __init__(self, target: int, order: tuple[int, int], stack: tuple[int, ...], explicit: int | None, born: int) -> None:
+        self.target = target
+        self.order = order
+        self.controls = frozenset(order)
+        self.stack = stack
+        self.explicit = explicit
+        self.blocked = False
+        self.born = born
+
+    def as_op(self) -> Op:
+        return Op(name="CCX", qubits=(self.order[0], self.order[1], self.target), condition=self.explicit)
+
+    def condition_bits(self) -> set[int]:
+        bits = set(self.stack)
+        if self.explicit is not None:
+            bits.add(self.explicit)
+        return bits
+
+
+class _AndTracker:
+    """Replace a clean Toffoli uncompute with HMR and a conditional CZ.
+
+    The compute CCX stays. The matching uncompute is rewritten only when
+    the target still holds the AND (no bit-flip on the controls or the
+    target) and either some intervening gate does not commute with the
+    CCX, or the pair is farther apart than the cancellation horizon. A
+    pair the horizon can still cancel is left alone, because deleting
+    both Toffolis is cheaper than replacing one of them.
+    """
+
+    def __init__(
+        self,
+        *,
+        named: set[int],
+        has_registers: bool,
+        fresh_bit: int,
+        window: int,
+        stats: PassStats,
+    ) -> None:
+        self.named = named
+        self.has_registers = has_registers
+        self.fresh_bit = fresh_bit
+        self.window = window
+        self.stats = stats
+        self.stack: list[int] = []
+        self.open: dict[int, _OpenAnd] = {}
+        self.by_q: dict[int, set[int]] = {}
+        self.proven_zero: set[int] = set()
+        self.proven_dirty: set[int] = set()
+        self.steps = 0
+
+    def feed(self, op: Op) -> list[Op]:
+        self.steps += 1
+        if op.name == "PUSH_CONDITION":
+            if op.condition is not None:
+                self.stack.append(op.condition)
+            return [op]
+        if op.name == "POP_CONDITION":
+            if self.stack:
+                self.stack.pop()
+            depth = len(self.stack)
+            for target, rec in list(self.open.items()):
+                if len(rec.stack) > depth:
+                    self._kill_dirty(target)
+            return [op]
+        if op.name == "CCX" and len(op.qubits) == 3:
+            rewritten = self._try_uncompute(op)
+            if rewritten is not None:
+                return rewritten
+            self._touch(op)
+            if self._can_open(op):
+                self._open(op)
+            else:
+                self._kill_dirty(op.qubits[2])
+            return [op]
+        self._touch(op)
+        if op.name in {"R", "HMR"} and op.qubits:
+            self._mark_zero(op.qubits[0])
+        else:
+            for qubit in _value_writes(op):
+                self._kill_dirty(qubit)
+        return [op]
+
+    def _is_zero(self, qubit: int) -> bool:
+        if qubit in self.open or qubit in self.proven_dirty:
+            return False
+        if qubit in self.proven_zero:
+            return True
+        return self.has_registers and qubit not in self.named
+
+    def _can_open(self, op: Op) -> bool:
+        if len(self.open) >= 100_000:
+            return False
+        control_a, control_b, target = op.qubits
+        if len({control_a, control_b, target}) < 3:
+            return False
+        if not self._is_zero(target):
+            return False
+        for control in (control_a, control_b):
+            if len(self.by_q.get(control, ())) >= 64:
+                return False
+        return True
+
+    def _open(self, op: Op) -> None:
+        control_a, control_b, target = op.qubits
+        rec = _OpenAnd(
+            target,
+            (control_a, control_b),
+            tuple(self.stack),
+            op.condition,
+            self.steps,
+        )
+        self.open[target] = rec
+        self.proven_dirty.add(target)
+        self.proven_zero.discard(target)
+        for qubit in (control_a, control_b, target):
+            self.by_q.setdefault(qubit, set()).add(target)
+
+    def _try_uncompute(self, op: Op) -> list[Op] | None:
+        target = op.qubits[2]
+        rec = self.open.get(target)
+        if rec is None:
+            return None
+        if frozenset(op.qubits[:2]) != rec.controls:
+            return None
+        if rec.explicit != op.condition or rec.stack != tuple(self.stack):
+            return None
+        gap = self.steps - rec.born
+        if not rec.blocked and gap <= self.window:
+            self._mark_zero(target)
+            return [op]
+        order = rec.order
+        self._mark_zero(target)
+        self.stats.and_uncomputes += 1
+        fresh = self.fresh_bit
+        hmr = Op(name="HMR", qubits=(target,), bits=(fresh,), condition=op.condition)
+        store = Op(name="BIT_STORE0", bits=(fresh,))
+        fix = Op(name="CZ", qubits=order, condition=fresh)
+        return [store, hmr, fix]
+
+    def _touch(self, op: Op) -> None:
+        seen: set[int] = set()
+        targets: list[int] = []
+        for qubit in op.qubits:
+            for target in self.by_q.get(qubit, ()):
+                if target not in seen:
+                    seen.add(target)
+                    targets.append(target)
+        written_bits = _bit_writes(op)
+        resets = {op.qubits[0]} if op.name in {"R", "HMR"} and op.qubits else set()
+        for target in targets:
+            rec = self.open.get(target)
+            if rec is None:
+                continue
+            if written_bits & rec.condition_bits():
+                self._kill_dirty(target)
+                continue
+            changed = _value_writes(op) & (rec.controls | {rec.target})
+            if changed:
+                # The AND value moved or was overwritten. Drop the record,
+                # then record the new bit on every qubit this op writes.
+                self._drop(target)
+                for qubit in changed:
+                    if qubit in resets:
+                        self.proven_dirty.discard(qubit)
+                        self.proven_zero.add(qubit)
+                    else:
+                        self.proven_zero.discard(qubit)
+                        self.proven_dirty.add(qubit)
+                continue
+            if not _commutes(rec.as_op(), op):
+                rec.blocked = True
+
+    def _mark_zero(self, qubit: int) -> None:
+        self._drop(qubit)
+        self.proven_dirty.discard(qubit)
+        self.proven_zero.add(qubit)
+
+    def _kill_dirty(self, qubit: int) -> None:
+        self._drop(qubit)
+        self.proven_zero.discard(qubit)
+        self.proven_dirty.add(qubit)
+
+    def _drop(self, target: int) -> None:
+        rec = self.open.pop(target, None)
+        if rec is None:
+            return
+        for qubit in rec.controls | {rec.target}:
+            bucket = self.by_q.get(qubit)
+            if bucket is None:
+                continue
+            bucket.discard(target)
+            if not bucket:
+                del self.by_q[qubit]
+
+
 def peephole(
     ops: list[Op],
     window: int,
     stats: PassStats | None = None,
     task: str | None = None,
+    *,
+    named_qubits: set[int] | None = None,
+    fresh_bit: int | None = None,
 ) -> list[Op]:
     """In-memory rewrite used by tests and by the kmx stream."""
 
@@ -241,6 +494,13 @@ def peephole(
         raise OptimizeBudgetError("window must be at least 1")
     _check_task(task)
     stats = stats or PassStats()
+    named = set(named_qubits or ())
+    if fresh_bit is None:
+        fresh_bit = 0
+        for op in ops:
+            for bit in _bits_of(op):
+                if bit + 1 > fresh_bit:
+                    fresh_bit = bit + 1
     emitted: list[Op] = []
     _rewrite_ops(
         ops,
@@ -250,6 +510,9 @@ def peephole(
         before=GateCounts(),
         deadline=None,
         task=task,
+        named_qubits=named,
+        has_registers=bool(named),
+        fresh_bit=fresh_bit,
     )
     return emitted
 
@@ -332,6 +595,42 @@ def _optimize_file(
     )
 
 
+def _qubit_width(max_id: int, named: set[int]) -> int:
+    """Header width kickmix requires: one past the highest id."""
+
+    if named:
+        max_id = max(max_id, max(named))
+    if max_id < 0:
+        return 0
+    return max_id + 1
+
+
+def _register_scope(registers: list[bytes], num_bits: int) -> tuple[set[int], int]:
+    named: set[int] = set()
+    max_bit = num_bits - 1
+    for payload in registers:
+        qubits, bits = register_ids(payload)
+        named |= qubits
+        if bits:
+            max_bit = max(max_bit, max(bits))
+    return named, max_bit + 1
+
+
+def _scan_kmx_scope(src: str, memory_budget_bytes: int) -> tuple[set[int], int, bool]:
+    named: set[int] = set()
+    max_bit = -1
+    has_registers = False
+    for op in read_kmx_ops(src, memory_budget_bytes):
+        if op.name in {"REGISTER", "APPEND_TO_REGISTER"}:
+            has_registers = True
+        if op.name == "APPEND_TO_REGISTER" and op.qubits:
+            named.add(op.qubits[0])
+        for bit in _bits_of(op):
+            if bit > max_bit:
+                max_bit = bit
+    return named, max_bit + 1, has_registers
+
+
 def _optimize_kmb(
     src: str,
     dst: str,
@@ -365,6 +664,7 @@ def _optimize_kmb(
             emitted_span.note(op)
             writer.emit(op)
 
+        named, fresh_bit = _register_scope(view.registers, view.num_bits)
         _rewrite_ops(
             ops(),
             emit,
@@ -373,26 +673,28 @@ def _optimize_kmb(
             before=before,
             deadline=deadline,
             task=task,
+            named_qubits=named,
+            has_registers=bool(view.registers),
+            fresh_bit=fresh_bit,
         )
-        # kickmix rejects a header whose qubit count is not max_id+1.
-        # Two Z gates are identity and free, and they keep that id so Q
-        # does not shrink when a cancelled gate was the only user.
-        source_max = view.num_qubits - 1
-        if source_max > emitted_span.max_qubit:
-            pad = Op(name="Z", qubits=(source_max,))
-            emit(pad)
-            emit(pad)
+        # Q is max qubit id + 1, including ids named by a register. A scratch
+        # id that no longer appears is not padded back: the published costs
+        # multiply by Q, and a named register still pins its own ids.
         if seen != view.num_ops:
             raise KickmixFormatError(f"read {seen} operations, header says {view.num_ops}")
         _check_deadline(deadline)
         after = writer.counts
-        if not should_materialize(before, after, task):
+        qubits_before = view.num_qubits
+        qubits_after = _qubit_width(emitted_span.max_qubit, named)
+        if not should_materialize(
+            before, after, task, qubits_before=qubits_before, qubits_after=qubits_after
+        ):
             writer.abort()
             _unlink(partial)
-            return _refused(before, after, stats, "kmb", task)
+            return _refused(before, after, stats, "kmb", task, qubits_before, qubits_after)
         writer.close()
         os.replace(partial, dst)
-        return _accepted(before, after, stats, dst, "kmb", task)
+        return _accepted(before, after, stats, dst, "kmb", task, qubits_before, qubits_after)
     except Exception:
         if writer is not None:
             writer.abort()
@@ -422,6 +724,7 @@ def _optimize_kmx(
     after = GateCounts()
     source_span = _Span()
     emitted_span = _Span()
+    named, fresh_bit, has_registers = _scan_kmx_scope(src, memory_budget_bytes)
     try:
         _check_deadline(deadline)
 
@@ -443,21 +746,23 @@ def _optimize_kmx(
                 before=before,
                 deadline=deadline,
                 task=task,
+                named_qubits=named,
+                has_registers=has_registers,
+                fresh_bit=fresh_bit,
             )
-            # Keep Q = max qubit id + 1. Two Z gates are identity and free.
-            if source_span.max_qubit > emitted_span.max_qubit:
-                pad = Op(name="Z", qubits=(source_span.max_qubit,))
-                emit(pad)
-                emit(pad)
         _check_deadline(deadline)
-        if not should_materialize(before, after, task):
+        qubits_before = _qubit_width(source_span.max_qubit, named)
+        qubits_after = _qubit_width(emitted_span.max_qubit, named)
+        if not should_materialize(
+            before, after, task, qubits_before=qubits_before, qubits_after=qubits_after
+        ):
             _unlink(partial)
-            return _refused(before, after, stats, "kmx", task)
+            return _refused(before, after, stats, "kmx", task, qubits_before, qubits_after)
         parent = os.path.dirname(dst)
         if parent:
             os.makedirs(parent, exist_ok=True)
         os.replace(partial, dst)
-        return _accepted(before, after, stats, dst, "kmx", task)
+        return _accepted(before, after, stats, dst, "kmx", task, qubits_before, qubits_after)
     except Exception:
         _unlink(partial)
         raise
@@ -491,6 +796,8 @@ def _optimize_directory(
     after = GateCounts()
     stats = PassStats()
     wrote_any = False
+    qubits_before = 0
+    qubits_after = 0
     try:
         for dirpath, _dirnames, filenames in os.walk(src):
             for name in filenames:
@@ -510,6 +817,12 @@ def _optimize_directory(
                     deadline=deadline,
                     task=task,
                 )
+                file_before_q = int((file_result.before or {}).get("qubits") or 0)
+                file_after_q = int((file_result.after or {}).get("qubits") or 0)
+                if not file_result.wrote:
+                    file_after_q = file_before_q
+                qubits_before = max(qubits_before, file_before_q)
+                qubits_after = max(qubits_after, file_after_q)
                 _add_dict(before, file_result.before)
                 if file_result.wrote:
                     wrote_any = True
@@ -519,33 +832,53 @@ def _optimize_directory(
                     _copy_stream(source, target)
                     _add_dict(after, file_result.before or file_result.after)
                     _add_stats(stats, file_result.stats)
-        if not wrote_any or not should_materialize(before, after, task):
+        if not wrote_any or not should_materialize(
+            before,
+            after,
+            task,
+            qubits_before=qubits_before,
+            qubits_after=qubits_after,
+        ):
             _unlink_tree(partial)
             _prune_empty(os.path.dirname(partial))
-            return _refused(before, after, stats, "directory", task)
+            return _refused(before, after, stats, "directory", task, qubits_before, qubits_after)
         _unlink_tree(dst)
         os.replace(partial, dst)
-        return _accepted(before, after, stats, dst, "directory", task)
+        return _accepted(before, after, stats, dst, "directory", task, qubits_before, qubits_after)
     except Exception:
         _unlink_tree(partial)
         raise
 
 
-def _refused(before: GateCounts, after: GateCounts, stats: PassStats, fmt: str, task: str | None) -> RewriteResult:
+def _refused(
+    before: GateCounts,
+    after: GateCounts,
+    stats: PassStats,
+    fmt: str,
+    task: str | None,
+    qubits_before: int | None = None,
+    qubits_after: int | None = None,
+) -> RewriteResult:
     if _cost_units(after, task) > _cost_units(before, task):
         reason = (
             "rewrite raised the verifier-aligned cost proxy. No candidate was written."
         )
+    elif (
+        qubits_before is not None
+        and qubits_after is not None
+        and qubits_after > qubits_before
+    ):
+        reason = "rewrite raised the qubit count. No candidate was written."
     else:
         reason = (
-            "rewrite did not reduce the instruction count or the verifier-aligned "
-            "cost proxy. No candidate was written."
+            "rewrite did not lower the charged gate weight or the qubit count. "
+            "No candidate was written."
         )
     return RewriteResult(
         False,
         reason,
-        _payload(before, task),
-        _payload(after, task),
+        _payload(before, task, qubits_before),
+        _payload(after, task, qubits_after),
         stats=stats.as_dict(),
         format=fmt,
         task=task,
@@ -559,12 +892,14 @@ def _accepted(
     path: str,
     fmt: str,
     task: str | None,
+    qubits_before: int | None = None,
+    qubits_after: int | None = None,
 ) -> RewriteResult:
     return RewriteResult(
         True,
-        "rewrite shrank the circuit. The candidate is not retained until the verifier accepts a strictly lower score.",
-        _payload(before, task),
-        _payload(after, task),
+        "rewrite lowered the charged gate weight or the qubit count. The candidate is not retained until the verifier accepts a strictly lower score.",
+        _payload(before, task, qubits_before),
+        _payload(after, task, qubits_after),
         path=path,
         stats=stats.as_dict(),
         format=fmt,
@@ -842,15 +1177,35 @@ class _Hold:
             self._index(index, op)
 
 
-def _rewrite_ops(ops, emit, *, window: int, stats: PassStats, before: GateCounts, deadline, task: str | None) -> None:
+def _rewrite_ops(
+    ops,
+    emit,
+    *,
+    window: int,
+    stats: PassStats,
+    before: GateCounts,
+    deadline,
+    task: str | None,
+    named_qubits: set[int] | None = None,
+    has_registers: bool = False,
+    fresh_bit: int = 0,
+) -> None:
     hold = _Hold(window)
     pending = _Pending()
+    tracker = _AndTracker(
+        named=set(named_qubits or ()),
+        has_registers=has_registers,
+        fresh_bit=fresh_bit,
+        window=window,
+        stats=stats,
+    )
     seen = 0
 
     def push(op: Op) -> None:
-        hold.push(op, stats)
-        while hold.overflow():
-            emit(hold.pop_front())
+        for produced in tracker.feed(op):
+            hold.push(produced, stats)
+            while hold.overflow():
+                emit(hold.pop_front())
 
     for op in ops:
         seen += 1
@@ -1054,6 +1409,7 @@ def _add_stats(total: PassStats, part: dict) -> None:
     total.store_overwrites += int(part.get("store_overwrites") or 0)
     total.empty_conditions += int(part.get("empty_conditions") or 0)
     total.dropped_identity_rotations += int(part.get("dropped_identity_rotations") or 0)
+    total.and_uncomputes += int(part.get("and_uncomputes") or 0)
 
 
 def _assert_separate(src: str, dst: str) -> None:

@@ -88,9 +88,10 @@ data directory.
 Issue #9 run `20261111T000307Z-0d076b2d` cancelled Clifford pairs (dqi lost
 about 1.1e6 instructions) and wrote no candidate, because the gate required
 the lexicographic key `(toffoli_like, t_like, high_rotations)` to fall. Those
-Cliffords are not in the published costs. The gate now writes a shorter
-circuit and sends it to the official verifier. Retention is still a PASS and
-a strictly lower JSON `score` (FR-004, FR-011).
+Cliffords are not in the published costs. That gate wrote the shorter
+circuit. Kaggle version 7 then showed the JSON score does not move, so a
+later pass stops writing a Clifford-only shrink. Retention is still a PASS
+and a strictly lower JSON `score` (FR-004, FR-011).
 
 No competition data was mounted for this change. No official verifier score
 was produced. Fixture circuits checked with kickmix 1.0.0 simulation:
@@ -98,13 +99,48 @@ was produced. Fixture circuits checked with kickmix 1.0.0 simulation:
 - `CCX; X` on the Toffoli target; `CCX` becomes the `X`. Toffoli count 2 → 0.
 - Two `Z_POW 0.125` on one qubit become one T (`Z_POW 0.25`). Static weight
   32 → 1. The phase matches.
-- `X q0; X q1; X q0` drops an instruction and leaves the static weight at 0.
-  The pipeline test sends that file to the stub verifier.
+- `X q0; X q1; X q0` drops an instruction and leaves the static weight and
+  the qubit count unchanged. That file is no longer sent to the verifier.
+  See the cost-targeted section below.
 
 `POST https://noetl.ai/api/dsl/validate` on 2026-11-11, server 3.156.2:
 both playbooks returned HTTP 200, `valid: true`, `execute_verdict: accept`,
 findings empty. Schema digest
 `sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be`.
+
+## Cost-targeted passes, 2026-11-11
+
+Issue #17. The numbers below are the external Kaggle version-7 run
+(`20261111T052032Z-e1a4aedc`, main `cd0168a`), not a measurement made in
+this environment. `vqcc.cost_breakdown` checks that the verifier JSON
+fields multiply to the printed score. FR-006 and FR-007 are not resolved
+here: `R` and `lambda_eff` are the verifier's printed values.
+
+| Task | Score | What dominates | Marginal cost |
+| --- | --- | --- | --- |
+| invsqrt | 2076774.233715282 | `Q=260` times `C=7987.593`. Toffolis are 7735/C (96.8%). The 37 fine rotations are the residual 252.343 Toffoli-equivalents (3.2%), matching `0.56 log2(1/eps)+5.3` T per rotation at the printed `rotation_eps`. `T/4` is 0.25. | One Toffoli is 260. One qubit is 7987.6. |
+| dqi | 24439466758900.453 | `R=1.19126` times `Q^2` times shot-mean Toffoli `5725109.13`. `t_like` and fine rotations are 0. The max Toffoli count is 5725461; the gap of about 352 is conditional Toffolis that do not fire on every shot. | One Toffoli is about 4.27e6. One qubit is about 2.58e10. |
+| dfthcsos | 3355599588.3155375 | `lambda_eff=49.30137` times Toffoli `93237` times `Q=730`. Each of the 10 angle files has kickmix width 119, 3974 Toffolis, 0 T, 0 fine rotations, and 1 bit. `2 * 39740 = 79480`. The other 13757 Toffolis are the part of `T_tot` not explained by counting each file forward and reverse (paper eq. A14). `Q=730` is not the per-file width. | One verifier Toffoli is about 35990. One file Toffoli, if both directions count it, is about 71980. One qubit is about 4.60e6. |
+
+Version 7's rewrite cancelled Cliffords only (invsqrt 2223 pairs, dqi
+598091 pairs, dfthcsos 0). Toffoli, T, fine-rotation, and qubit counts
+did not change, so the JSON scores did not change. dfthcsos wrote no
+candidate because nothing in the horizon moved: the angle files have no
+T or fine `Z_POW` for the rotation merge, and no self-inverse pair commutes
+into a 4096-gate horizon. A compute/use/uncompute Toffoli does not commute,
+so that horizon cannot see it.
+
+The new pass replaces that uncompute with `HMR` and a conditional `CZ` when
+the target is known clean. Kickmix 1.0.0 simulation (qubits and shot phase,
+several measurement shots) matches on use, phase, nested AND, conditional,
+and `PUSH_CONDITION` fixtures. A named register qubit is not treated as
+clean unless `R` or `HMR` resets it first. A scratch id that the rewrite
+stops using is dropped from `Q` instead of being padded with two `Z` gates.
+A Clifford-only shrink that keeps the charged weight and `Q` is not written.
+
+No competition data was mounted. No official verifier score was produced.
+If a dfthcsos angle file has no clean AND uncompute, the run still writes
+no candidate; `and_uncomputes` in the attempt stats is the count.
 
 ## How to log a real attempt later
 
