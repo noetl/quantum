@@ -107,6 +107,10 @@ was produced. Fixture circuits checked with kickmix 1.0.0 simulation:
 both playbooks returned HTTP 200, `valid: true`, `execute_verdict: accept`,
 findings empty. Schema digest
 `sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be`.
+On 2026-11-13 the public validator's digest moved to
+`sha256:25071111774314cbf0c83ee9925b53701c2228232574bda3b13b1e27d58b372c`
+(`GET /api/dsl/version` reported server 3.161.2). The playbook steps were
+not rewritten for that pin.
 
 ## Cost-targeted passes, 2026-11-11
 

@@ -79,6 +79,14 @@ The step JSON field `structure` (and each attempt's `structure`) holds:
 - Toffoli shape: clean AND opens, matching uncompute pairs, shared-control
   candidates, adjacent same-control run length, cascade links, ripple-like
   links, and the heaviest control pairs
+- `toffoli.match`: for each profiled shared-control candidate and each
+  matching uncompute pair, one label. `eligible` is a strict match.
+  `control_mutated` and `condition_bit_written` mean the profile still
+  counted an AND after its bit stopped being that AND.
+  `condition_mismatch` is a live AND whose firing condition does not match
+  the later `CCX`. The four labels sum to the candidate count. The attempt
+  `stats` also carry `and_replays`, `left_for_cancellation`, and
+  `reject_condition_mismatch`
 - qubit lifetimes: header width, ids touched, unused ids below the header,
   peak live qubits if a qubit dies only on unconditional `R`/`HMR`, peak
   live if a matching clean-AND uncompute also kills the target, and
@@ -96,24 +104,108 @@ is not the per-file width of 119, so a narrower file is sent to the
 verifier only when the charged weight or a file width actually drops. The
 verifier score decides whether it is kept.
 
-## What would have to be true for a score to move
+## Version 9: the counts were not strict matches
 
-Shared-control factoring replaces one `CCX` with `CX` only while a clean
-AND is still stored on its target. The kickmix adder and multiplier above
-do not have that pattern. Version 8's uncompute pass, which uses the same
-`|0>` proof, found nothing to delete. If the sample files are built the
-same way, the Toffoli count will not move.
+Kaggle version 9 (notebook scriptVersionId 368976547, main `da8490e`, run
+`20261113T015716Z-fea5b448`) logged the profile of the input circuits.
+Evidence is the comment on
+[issue 19](https://github.com/noetl/quantum/issues/19#issuecomment-6844754721).
+This environment still does not have the sample files, so the split of
+those 832 and 222 rows is not measured here. The match rules below are
+what the code did on that commit, checked on small circuits.
 
-Qubit reuse lowers `Q` only when a scratch id sits above a real gap, or
-above an id that an unconditional `R` or `HMR` has returned to `|0>`, and
-the file has a named quantum register so system ids stay put. The kickmix
-builder already hands freed ancillas back out, and the three idioms above
-have peak live equal to the header. A reference built that way has no
-headroom. dqi squares `Q`, so headroom would matter, but it is not visible
-from here.
+| Task | shared_control_candidates | matching_uncompute_pairs | shared_control_factors | and_uncomputes | Toffoli |
+| --- | --- | --- | --- | --- | --- |
+| invsqrt | 11 | 0 | 0 | 0 | unchanged (the retained gain was one qubit, 260 → 259) |
+| dqi | 832 | 222 | 0 | 0 | 5725461 before and after |
+| dfthcsos | 0 in every angle file | 0 | 0 | 0 | unchanged |
 
-Until the logged `structure` for the sample files shows
-`shared_control_candidates` above 0 or `reuse_headroom_vs_header` above 0,
-the official scores should be expected to stay at the version 8 baselines.
-A candidate is still kept only on verifier `PASS` and a strictly lower
-JSON `score`.
+dqi's cost is `R × Q² × Toffoli`. `Q` is 1893 and
+`reuse_headroom_vs_header` is 0, so a dqi gain has to be a lower Toffoli
+count. Version 9 did not write a dqi candidate. The official score stayed
+24439466758900.453. That number is the version 9 verifier result, not a
+new measurement from this tree.
+
+The profile and the transform did not use the same match.
+
+The profile counts a later `CCX` as a shared-control candidate, or as a
+matching uncompute when the target is the same, while any earlier clean
+AND of those controls is still in its map. It drops that AND when the
+**target** is value-written or reset. It does not drop it when a
+**control** is value-written (`X`, `CX`, `SWAP`, `CSWAP`), when a
+condition bit is overwritten (`BIT_INVERT`, `BIT_STORE0`, `BIT_STORE1`,
+`HMR` into that bit), or when the explicit `if` bit or the
+`PUSH_CONDITION` stack differs.
+
+The transform drops the AND on a control write or a condition-bit write,
+because the target no longer holds the AND of the current control bits.
+Rewriting those `CCX`s would change the circuit. A same-target pair is an
+uncompute only when the firing conditions are the same set of bits. A
+different condition is not an inverse: the second `CCX` does not clear the
+AND on every shot the first one set it. Version 9 also required the stack
+tuple and the explicit bit to be identical, so a narrower later condition
+was refused even when the stored bit was still the AND. And it refused to
+record a 65th live AND on a qubit that already had 64 open ANDs. dqi's
+`peak_open_ands` was 857, above that cap. A later `CCX` could still copy
+from one of the 64 that remained valid. The miss was an AND the cap never
+stored, which is the case this pass now records.
+
+`longest_same_control_run` was 1 on dqi. The repeated control pair
+`(888, 1803)` × 65520 is not an adjacent run of live ANDs. Kickmix's own
+`init_gf2_mul`, lookup, and unary iteration separate a repeated control
+pair with an `X` on a control or with `HMR`. Those idioms profile as 0
+shared-control candidates. The 832 are the pairs that survive the
+profile's weaker check and fail the transform's check.
+
+`clean_and_opens` was 454645 on dqi, and `and_uncomputes` was 0. Most of
+those opens are already closed by measurement (`HMR` plus a conditional
+`CZ`, kickmix `del_and`), not by a second `CCX`. The profile drops the
+record on that `HMR`, so those closes are not part of the 222. There is
+no second Toffoli to delete until the same controls are computed again.
+
+A pair the horizon can still cancel is left for that cancellation, which
+removes two Toffolis and does not increment `and_uncomputes`. dqi's
+Toffoli count did not move, so none of the 222 took that path. They were
+not strict matches. `cancelled_pairs` on dqi was 598091 and the charged
+weight did not change: those deletions were Cliffords.
+
+## What this pass changes, and what it does not
+
+Two strict misses are now rewrites. Both are checked by kickmix simulation
+on small circuits, including the shot phase.
+
+- A later `CCX` of a live AND may sit under a narrower condition. It
+  becomes `CX` from the AND target, under that narrower condition. A
+  same-target `CCX` whose condition is not the same set of bits is still
+  left alone.
+- `POP_CONDITION` no longer forgets an AND. The firing condition is the
+  set of bits, so a later gate under that same set can still match.
+- The per-control cap of 64 live ANDs is gone. The total open-AND cap
+  stays 100000.
+- Measurement replay. When `del_and` is `HMR` immediately followed by `CZ`
+  on the two controls, and a later `CCX` uses those controls on a
+  **different** target before any write of a control, any use of the
+  measured bit, or any use of the AND qubit, the `HMR`/`CZ` pair is
+  delayed and that `CCX` becomes `CX`. A recompute onto the same qubit
+  emits the delayed pair first and keeps the `CCX`: dropping it would
+  clear the bit on the next use. An `X` on a control in between is not
+  replayed. That is the shape of kickmix unary iteration and lookup, so
+  those idioms still do not lose a Toffoli.
+
+`stats.and_replays` counts recomputes replaced that way.
+`stats.shared_control_factors` counts a copy taken while the AND was never
+uncomputed. `stats.reject_condition_mismatch` counts a live AND the later
+`CCX` did not imply. `structure.toffoli.match` is the profile-side split
+of the candidate counts. `structure.toffoli.measurement_and_closes` counts
+open ANDs closed by `R` or `HMR`.
+
+No Toffoli construction for a mutated control is sound. A ripple-like link
+or an AND-cascade link is a shape count of adjacent `CCX`s. Kickmix
+`iadd` and `init_gf2_mul` already copy with `CX` and uncompute with
+`del_and`. This pass does not replace those blocks with a different adder.
+
+Nothing here is a new official score. A candidate is written only when the
+static Toffoli weight or the qubit count drops, and it is kept only on
+verifier `PASS` and a strictly lower JSON `score` (user story 2, FR-001,
+FR-003, FR-004, FR-010, FR-011). dqi's version 9 score is the baseline
+until a later Kaggle run measures a candidate.

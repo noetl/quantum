@@ -51,9 +51,17 @@ Two further rewrites use that same ``|0>`` proof.
 
 - Shared-control factoring. While a clean AND is still stored on its
   target, a later ``CCX`` with the same controls and a different target
-  is the same XOR. It is replaced by ``CX`` from the AND target. Kickmix
-  idioms usually copy with ``CX`` already; the rewrite fires only when a
-  second ``CCX`` is still present.
+  is the same XOR. It is replaced by ``CX`` from the AND target. The
+  later gate may be under a narrower condition: the copy fires only when
+  the stored AND was computed. Kickmix idioms usually copy with ``CX``
+  already; the rewrite fires only when a second ``CCX`` is still present.
+- Measurement replay. Kickmix ``del_and`` is ``HMR`` plus ``CZ`` on the
+  controls. When the controls are not touched before the same AND is
+  computed again, the ``HMR``/``CZ`` pair is delayed and the recompute
+  ``CCX`` becomes ``CX`` from the qubit that still holds the AND. A write
+  of a control, a use of the measured bit, or a use of the AND qubit
+  emits the delayed pair first. The Toffoli count drops only when a
+  recompute is actually replaced.
 - Qubit lifetime compaction. Scratch wires whose lifetimes are split by
   an unconditional ``R`` or ``HMR`` can share a physical id that is known
   ``|0>``. Named register ids are never renumbered and are never given
@@ -73,7 +81,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 
-from vqcc.profile import StructureProfiler
+from vqcc.profile import StructureProfiler, firing_bits
 from vqcc.kickmix_file import (
     ANGLE_MOD,
     Z_ANGLE,
@@ -126,6 +134,9 @@ class PassStats:
     and_uncomputes: int = 0
     clean_and_opens: int = 0
     shared_control_factors: int = 0
+    and_replays: int = 0
+    left_for_cancellation: int = 0
+    reject_condition_mismatch: int = 0
     qubit_reuses: int = 0
     qubit_relabels: int = 0
 
@@ -139,6 +150,9 @@ class PassStats:
             "and_uncomputes": self.and_uncomputes,
             "clean_and_opens": self.clean_and_opens,
             "shared_control_factors": self.shared_control_factors,
+            "and_replays": self.and_replays,
+            "left_for_cancellation": self.left_for_cancellation,
+            "reject_condition_mismatch": self.reject_condition_mismatch,
             "qubit_reuses": self.qubit_reuses,
             "qubit_relabels": self.qubit_relabels,
         }
@@ -316,7 +330,17 @@ def _bit_writes(op: Op) -> set[int]:
 
 
 class _OpenAnd:
-    __slots__ = ("target", "order", "controls", "stack", "explicit", "blocked", "born")
+    __slots__ = (
+        "target",
+        "order",
+        "controls",
+        "stack",
+        "explicit",
+        "blocked",
+        "born",
+        "required",
+        "deferred_ops",
+    )
 
     def __init__(self, target: int, order: tuple[int, int], stack: tuple[int, ...], explicit: int | None, born: int) -> None:
         self.target = target
@@ -326,6 +350,11 @@ class _OpenAnd:
         self.explicit = explicit
         self.blocked = False
         self.born = born
+        self.deferred_ops: tuple[Op, Op] | None = None
+        required = set(self.stack)
+        if self.explicit is not None:
+            required.add(self.explicit)
+        self.required = frozenset(required)
 
     def as_op(self) -> Op:
         return Op(name="CCX", qubits=(self.order[0], self.order[1], self.target), condition=self.explicit)
@@ -368,41 +397,43 @@ class _AndTracker:
         self.proven_zero: set[int] = set()
         self.proven_dirty: set[int] = set()
         self.steps = 0
+        self.held: Op | None = None
+        self.held_stack: tuple[int, ...] = ()
+        self.deferred: list[_OpenAnd] = []
 
     def feed(self, op: Op) -> list[Op]:
         self.steps += 1
-        if op.name == "PUSH_CONDITION":
-            if op.condition is not None:
-                self.stack.append(op.condition)
-            return [op]
-        if op.name == "POP_CONDITION":
-            if self.stack:
-                self.stack.pop()
-            depth = len(self.stack)
-            for target, rec in list(self.open.items()):
-                if len(rec.stack) > depth:
-                    self._kill_dirty(target)
-            return [op]
-        if op.name == "CCX" and len(op.qubits) == 3:
-            rewritten = self._try_uncompute(op)
-            if rewritten is not None:
-                return rewritten
-            factored = self._try_factor(op)
-            if factored is not None:
-                return factored
-            self._touch(op)
-            if self._can_open(op):
-                self._open(op)
-            else:
-                self._kill_dirty(op.qubits[2])
-            return [op]
-        self._touch(op)
-        if op.name in {"R", "HMR"} and op.qubits:
-            self._mark_zero(op.qubits[0])
-        else:
-            for qubit in _value_writes(op):
-                self._kill_dirty(qubit)
-        return [op]
+        if self.held is not None:
+            if op.name in _METADATA:
+                return [op]
+            hmr = self.held
+            held_stack = self.held_stack
+            self.held = None
+            self.held_stack = ()
+            if self._is_fixup(hmr, held_stack, op):
+                self._defer(hmr, op)
+                return []
+            return self._drive(hmr) + self._drive(op)
+        if self._should_hold(op):
+            self.held = op
+            self.held_stack = tuple(self.stack)
+            return []
+        return self._drive(op)
+
+    def drain(self) -> list[Op]:
+        """Emit a held ``HMR`` and any delayed ``del_and`` pairs."""
+
+        out: list[Op] = []
+        if self.held is not None:
+            hmr = self.held
+            self.held = None
+            self.held_stack = ()
+            out.extend(self._apply(hmr))
+        for rec in list(self.deferred):
+            if rec.deferred_ops is not None:
+                out.extend(self._flush_one(rec))
+        self.deferred = [rec for rec in self.deferred if rec.deferred_ops is not None]
+        return out
 
     def _is_zero(self, qubit: int) -> bool:
         if qubit in self.open or qubit in self.proven_dirty:
@@ -419,9 +450,6 @@ class _AndTracker:
             return False
         if not self._is_zero(target):
             return False
-        for control in (control_a, control_b):
-            if len(self.by_q.get(control, ())) >= 64:
-                return False
         return True
 
     def _open(self, op: Op) -> None:
@@ -443,15 +471,17 @@ class _AndTracker:
     def _try_uncompute(self, op: Op) -> list[Op] | None:
         target = op.qubits[2]
         rec = self.open.get(target)
-        if rec is None:
+        if rec is None or rec.deferred_ops is not None:
             return None
         if frozenset(op.qubits[:2]) != rec.controls:
             return None
-        if rec.explicit != op.condition or rec.stack != tuple(self.stack):
+        if rec.required != firing_bits(self.stack, op.condition):
+            self.stats.reject_condition_mismatch += 1
             return None
         gap = self.steps - rec.born
         if not rec.blocked and gap <= self.window:
             self._mark_zero(target)
+            self.stats.left_for_cancellation += 1
             return [op]
         order = rec.order
         self._mark_zero(target)
@@ -462,14 +492,150 @@ class _AndTracker:
         fix = Op(name="CZ", qubits=order, condition=fresh)
         return [store, hmr, fix]
 
-    def _try_factor(self, op: Op) -> list[Op] | None:
-        """Replace a second CCX of a live clean AND with CX from that AND.
+    def _drive(self, op: Op) -> list[Op]:
+        if op.name == "PUSH_CONDITION":
+            if op.condition is not None:
+                self.stack.append(op.condition)
+            return [op]
+        if op.name == "POP_CONDITION":
+            if self.stack:
+                self.stack.pop()
+            return [op]
+        if op.name == "CCX" and len(op.qubits) == 3:
+            replayed = self._replay_same_target(op)
+            if replayed is not None:
+                return replayed
+            if self._coherent_uncompute(op):
+                flushed = self._flush_conflicts(op, keep=None)
+                return flushed + self._apply(op)
+            source = self._pick_factor(op)
+            if source is not None:
+                flushed = self._flush_conflicts(op, keep=source)
+                if source.deferred_ops is not None:
+                    self.stats.and_replays += 1
+                else:
+                    self.stats.shared_control_factors += 1
+                copied = Op(name="CX", qubits=(source.target, op.qubits[2]), condition=op.condition)
+                return flushed + self._emit_instead(copied)
+            flushed = self._flush_conflicts(op, keep=None)
+            return flushed + self._apply(op)
+        flushed = self._flush_conflicts(op, keep=None)
+        return flushed + self._apply(op)
 
-        The open target still holds the control AND, so XORing it into the
-        new target is the same operation as another CCX. The open record
-        stays. The new target is marked dirty.
+    def _apply(self, op: Op) -> list[Op]:
+        if op.name == "PUSH_CONDITION":
+            if op.condition is not None:
+                self.stack.append(op.condition)
+            return [op]
+        if op.name == "POP_CONDITION":
+            if self.stack:
+                self.stack.pop()
+            return [op]
+        if op.name == "CCX" and len(op.qubits) == 3:
+            rewritten = self._try_uncompute(op)
+            if rewritten is not None:
+                return rewritten
+            self._touch(op)
+            if self._can_open(op):
+                self._open(op)
+            else:
+                self._kill_dirty(op.qubits[2])
+            return [op]
+        self._touch(op)
+        if op.name in {"R", "HMR"} and op.qubits:
+            self._mark_zero(op.qubits[0])
+        else:
+            for qubit in _value_writes(op):
+                self._kill_dirty(qubit)
+        return [op]
+
+    def _should_hold(self, op: Op) -> bool:
+        if op.name != "HMR" or len(op.qubits) != 1 or not op.bits:
+            return False
+        rec = self.open.get(op.qubits[0])
+        if rec is None or rec.deferred_ops is not None:
+            return False
+        return rec.required == firing_bits(self.stack, op.condition)
+
+    def _is_fixup(self, hmr: Op, held_stack: tuple[int, ...], op: Op) -> bool:
+        rec = self.open.get(hmr.qubits[0]) if hmr.qubits else None
+        if rec is None or rec.deferred_ops is not None:
+            return False
+        if op.name != "CZ" or len(op.qubits) != 2 or not hmr.bits:
+            return False
+        if frozenset(op.qubits) != rec.controls:
+            return False
+        if op.condition != hmr.bits[0]:
+            return False
+        return tuple(self.stack) == held_stack
+
+    def _defer(self, hmr: Op, cz: Op) -> None:
+        rec = self.open[hmr.qubits[0]]
+        rec.deferred_ops = (hmr, cz)
+        self.deferred.append(rec)
+
+    def _coherent_uncompute(self, op: Op) -> bool:
+        rec = self.open.get(op.qubits[2])
+        if rec is None or rec.deferred_ops is not None:
+            return False
+        if frozenset(op.qubits[:2]) != rec.controls:
+            return False
+        return rec.required == firing_bits(self.stack, op.condition)
+
+    def _replay_same_target(self, op: Op) -> list[Op] | None:
+        """A recompute onto the qubit that still holds the AND.
+
+        The original ``HMR`` reset that qubit before this ``CCX``. Emit the
+        delayed pair first, then the ``CCX``. Skipping the ``CCX`` would
+        leave the bit in place and then clear it on the next use.
         """
 
+        target = op.qubits[2]
+        rec = self.open.get(target)
+        if rec is None or rec.deferred_ops is None:
+            return None
+        if frozenset(op.qubits[:2]) != rec.controls:
+            return None
+        flushed = self._flush_conflicts(op, keep=None)
+        return flushed + self._apply(op)
+
+    def _conflicts(self, rec: _OpenAnd, op: Op) -> bool:
+        if rec.deferred_ops is None:
+            return False
+        bit = rec.deferred_ops[0].bits[0]
+        if op.condition == bit or bit in op.bits:
+            return True
+        if _bit_writes(op) & rec.required or bit in _bit_writes(op):
+            return True
+        qubits = set(op.qubits)
+        if rec.target in qubits or qubits & set(rec.controls):
+            return True
+        return False
+
+    def _flush_conflicts(self, op: Op, keep: _OpenAnd | None) -> list[Op]:
+        out: list[Op] = []
+        kept: list[_OpenAnd] = []
+        for rec in self.deferred:
+            if rec.deferred_ops is None:
+                continue
+            if rec is not keep and self._conflicts(rec, op):
+                out.extend(self._flush_one(rec))
+            else:
+                kept.append(rec)
+        self.deferred = kept
+        return out
+
+    def _flush_one(self, rec: _OpenAnd) -> list[Op]:
+        ops = rec.deferred_ops
+        rec.deferred_ops = None
+        if ops is None:
+            return []
+        out: list[Op] = []
+        for item in ops:
+            out.extend(self._apply(item))
+        return out
+
+    def _pick_factor(self, op: Op) -> _OpenAnd | None:
         control_a, control_b, target = op.qubits
         if control_a == control_b or target in (control_a, control_b):
             return None
@@ -478,23 +644,20 @@ class _AndTracker:
         right = self.by_q.get(control_b)
         if not left or not right:
             return None
-        stack = tuple(self.stack)
-        chosen: _OpenAnd | None = None
+        active = firing_bits(self.stack, op.condition)
+        mismatched = False
         for candidate in left:
             if candidate == target or candidate not in right:
                 continue
             record = self.open.get(candidate)
             if record is None or record.controls != controls:
                 continue
-            if record.explicit != op.condition or record.stack != stack:
-                continue
-            chosen = record
-            break
-        if chosen is None:
-            return None
-        self.stats.shared_control_factors += 1
-        copied = Op(name="CX", qubits=(chosen.target, target), condition=op.condition)
-        return self._emit_instead(copied)
+            if record.required <= active:
+                return record
+            mismatched = True
+        if mismatched:
+            self.stats.reject_condition_mismatch += 1
+        return None
 
     def _emit_instead(self, op: Op) -> list[Op]:
         self._touch(op)
@@ -1562,11 +1725,14 @@ def _rewrite_ops(
         profiler.note_register_qubits(named)
     seen = 0
 
+    def emit_ready(ready: Op) -> None:
+        hold.push(ready, stats)
+        while hold.overflow():
+            emit(reuse.apply(hold.pop_front()))
+
     def push(op: Op) -> None:
         for produced in tracker.feed(op):
-            hold.push(produced, stats)
-            while hold.overflow():
-                emit(reuse.apply(hold.pop_front()))
+            emit_ready(produced)
 
     for op in ops:
         seen += 1
@@ -1584,6 +1750,8 @@ def _rewrite_ops(
         for flushed in pending.flush_blocked(reduced):
             push(flushed)
         push(reduced)
+    for extra in tracker.drain():
+        emit_ready(extra)
     for flushed in pending.flush_all():
         push(flushed)
     for op in hold.drain():
@@ -1775,6 +1943,9 @@ def _add_stats(total: PassStats, part: dict) -> None:
     total.and_uncomputes += int(part.get("and_uncomputes") or 0)
     total.clean_and_opens += int(part.get("clean_and_opens") or 0)
     total.shared_control_factors += int(part.get("shared_control_factors") or 0)
+    total.and_replays += int(part.get("and_replays") or 0)
+    total.left_for_cancellation += int(part.get("left_for_cancellation") or 0)
+    total.reject_condition_mismatch += int(part.get("reject_condition_mismatch") or 0)
     total.qubit_reuses += int(part.get("qubit_reuses") or 0)
     total.qubit_relabels += int(part.get("qubit_relabels") or 0)
 

@@ -33,34 +33,38 @@ New on this commit, beyond PR #18:
 No improvement on the reference circuits is claimed from the machine that
 merged PR #20. The sample files were not in that environment.
 
-## What is running
+## What version 9 measured
 
-**Version 9 is pending.** It is the Kaggle run of this commit
-(`da8490e`) on the private notebook. There is no scriptVersionId, run id,
-elapsed time, or score to report. Do not treat a missing number as zero, and
-do not copy the version 8 scores forward as if they were version 9.
+Version 9 finished. Notebook scriptVersionId `368976547`, run
+`20261113T015716Z-fea5b448`, from main `da8490e`. The evidence comment is
+on [issue 19](https://github.com/noetl/quantum/issues/19#issuecomment-6844754721).
+invsqrt's retained official score is `2068786.6405086848` (259 qubits; the
+Toffoli count did not change). dqi stayed at `24439466758900.453` and
+dfthcsos stayed at `3355599588.3155375`. `shared_control_factors` and
+`and_uncomputes` were 0 on every task. dqi's profile still counted 832
+shared-control candidates and 222 matching uncompute pairs, with
+`reuse_headroom_vs_header` 0. Those counts are not strict matches. The
+split is written up in
+[Circuit structure](Circuit-Structure). A candidate
+count above 0 did not move the official score.
 
-The useful output, when the log exists, is the `structure` object on each
-optimize step: `shared_control_candidates`, `reuse_headroom_vs_header`,
-clean-AND counts, and the opcode histogram. PR #20's own expectation, which
-this page repeats and does not strengthen: a lower official score is not
-expected unless that report shows shared-control candidates above 0 or reuse
-headroom above 0. dqi would feel a real `Q` drop because `Q` is squared. A
-circuit whose peak live count already equals its header will not move.
-dfthcsos's official `Q` is 730 while each angle file is width 119, so a
-narrower file is not assumed to change that score. The verifier still
-decides.
+dqi would feel a real `Q` drop because `Q` is squared, and it has no
+headroom. dfthcsos's official `Q` is 730 while each angle file is width
+119, so a narrower file is not assumed to change that score. The verifier
+still decides. No score from a later pass is claimed here.
 
 ## What to do next
 
-1. Let version 9 finish. Paste the provenance summary onto
-   [issue #9](https://github.com/noetl/quantum/issues/9) using the list in
-   [Running on Kaggle](Tutorial-05-Kaggle). Leave version 9 blank in
-   [the history](Tutorial-06-History) until that comment exists.
-2. Read `structure` before writing another pass. If shared-control
-   candidates and reuse headroom are both 0, another Clifford or clean-AND
-   pass will not move the score. Version 8 already showed the clean-AND
-   uncompute count is 0.
+1. Version 9's provenance is the comment on
+   [issue #19](https://github.com/noetl/quantum/issues/19#issuecomment-6844754721).
+   A later Kaggle run is what measures whether a new Toffoli rewrite
+   lowers a score. Do not fill a score in
+   [the history](Tutorial-06-History) until that run exists.
+2. Read `structure.toffoli.match` before treating a candidate count as
+   work the transform can do. `control_mutated` and
+   `condition_bit_written` are not rewrites.
+   `stats.and_replays` and `stats.shared_control_factors` are the
+   applications. Version 9's application counts were 0.
 3. Spend the next code change on something the cost formula charges:
    Toffoli count, T count, the invsqrt fine-rotation term, or `Q`. Issue
    [#19](https://github.com/noetl/quantum/issues/19) still lists cheaper

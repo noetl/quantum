@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vqcc.kickmix_file import Op  # noqa: E402
+from vqcc.optimize import PassStats, peephole  # noqa: E402
 from vqcc.profile import profile_ops  # noqa: E402
 
 
@@ -48,6 +49,53 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(report["resets"]["unconditional_r"], 1)
         self.assertTrue(report["not_a_score"])
         self.assertEqual(report["qubits"]["reuse_blocked"], "no_registers")
+        self.assertEqual(toffoli["match"]["shared_control"]["eligible"], 1)
+        self.assertEqual(toffoli["match"]["uncompute"]["eligible"], 1)
+        self.assertEqual(sum(toffoli["match"]["shared_control"].values()), toffoli["shared_control_candidates"])
+        self.assertEqual(sum(toffoli["match"]["uncompute"].values()), toffoli["matching_uncompute_pairs"])
+
+    def test_control_flip_is_counted_and_not_a_strict_match(self) -> None:
+        ops = [
+            Op(name="R", qubits=(2,)),
+            Op(name="CCX", qubits=(0, 1, 2)),
+            Op(name="X", qubits=(0,)),
+            Op(name="CCX", qubits=(0, 1, 3)),
+            Op(name="CCX", qubits=(1, 0, 2)),
+        ]
+        report = profile_ops(ops, has_registers=False, header_qubits=4)
+        toffoli = report["toffoli"]
+        self.assertEqual(toffoli["shared_control_candidates"], 1)
+        self.assertEqual(toffoli["match"]["shared_control"]["control_mutated"], 1)
+        self.assertEqual(toffoli["match"]["shared_control"]["eligible"], 0)
+        self.assertEqual(toffoli["matching_uncompute_pairs"], 1)
+        self.assertEqual(toffoli["match"]["uncompute"]["control_mutated"], 1)
+        stats = PassStats()
+        peephole(ops, 32, stats)
+        self.assertEqual(stats.shared_control_factors, 0)
+        self.assertEqual(stats.and_replays, 0)
+        self.assertEqual(stats.and_uncomputes, 0)
+
+    def test_condition_mismatch_and_condition_bit_write(self) -> None:
+        mismatched = [
+            Op(name="R", qubits=(2,)),
+            Op(name="CCX", qubits=(0, 1, 2), condition=0),
+            Op(name="CCX", qubits=(0, 1, 3)),
+        ]
+        report = profile_ops(mismatched, has_registers=False, header_qubits=4)
+        self.assertEqual(report["toffoli"]["match"]["shared_control"]["condition_mismatch"], 1)
+        self.assertEqual(report["toffoli"]["match"]["shared_control"]["eligible"], 0)
+        written = [
+            Op(name="R", qubits=(2,)),
+            Op(name="CCX", qubits=(0, 1, 2), condition=0),
+            Op(name="BIT_INVERT", bits=(0,)),
+            Op(name="CCX", qubits=(0, 1, 3), condition=0),
+        ]
+        report = profile_ops(written, has_registers=False, header_qubits=4)
+        self.assertEqual(report["toffoli"]["match"]["shared_control"]["condition_bit_written"], 1)
+        stats = PassStats()
+        peephole(mismatched, 32, stats)
+        self.assertEqual(stats.shared_control_factors, 0)
+        self.assertGreaterEqual(stats.reject_condition_mismatch, 1)
 
     def test_register_scratch_starts_clean_and_named_stays_in_the_peak(self) -> None:
         ops = [
@@ -100,6 +148,109 @@ class RewriteSimulationTests(unittest.TestCase):
         self.assertTrue(result.wrote, result.reason)
         self.assertGreaterEqual(result.stats["shared_control_factors"], 1)
         _assert_same_wires(self, kickmix, original, optimized, inputs=2)
+
+    def test_narrower_condition_factors_and_matches(self) -> None:
+        kickmix = _kickmix()
+        builder = kickmix.CircuitBuilder()
+        controls = builder.create_quantum_register(2, "x")
+        flag = builder.create_classical_register(1, "flag")
+        anc = builder.alloc_qubits(1)[0]
+        out = builder.alloc_qubits(1)[0]
+        builder.ccx(controls[0], controls[1], anc)
+        builder.push_condition(flag[0])
+        builder.ccx(controls[0], controls[1], out)
+        builder.pop_condition()
+        original = builder.finish_circuit()
+        _original, optimized, result = _optimize_circuit(kickmix, original)
+        self.assertTrue(result.wrote, result.reason)
+        self.assertEqual(result.stats["shared_control_factors"], 1)
+        self.assertLess(result.after["toffoli_like"], result.before["toffoli_like"])
+        _assert_same_shots(self, kickmix, original, optimized, inputs=2, flag=True)
+
+    def test_recompute_after_del_and_replays_when_controls_stay(self) -> None:
+        kickmix = _kickmix()
+        builder = kickmix.CircuitBuilder()
+        controls = builder.create_quantum_register(2, "x")
+        first = builder.alloc_qubits(1)[0]
+        copied = builder.alloc_qubits(1)[0]
+        builder.init_and(controls[0], controls[1], first)
+        builder.cx(first, copied)
+        builder.del_and(controls[0], controls[1], first)
+        second = builder.alloc_qubits(1)[0]
+        again = builder.alloc_qubits(1)[0]
+        builder.init_and(controls[0], controls[1], second)
+        builder.cx(second, again)
+        builder.del_and(controls[0], controls[1], second)
+        original = builder.finish_circuit()
+        _original, optimized, result = _optimize_circuit(kickmix, original)
+        self.assertTrue(result.wrote, result.reason)
+        self.assertGreaterEqual(result.stats["and_replays"], 1)
+        self.assertLess(result.after["toffoli_like"], result.before["toffoli_like"])
+        _assert_same_shots(self, kickmix, original, optimized, inputs=2)
+
+    def test_control_flip_between_del_and_and_recompute_is_not_replayed(self) -> None:
+        kickmix = _kickmix()
+        text = "\n".join(
+            [
+                "APPEND_TO_REGISTER q0 r0",
+                "APPEND_TO_REGISTER q1 r0",
+                'REGISTER r0 "x"',
+                "R q2",
+                "CCX q0 q1 q2",
+                "HMR q2 b0",
+                "CZ q0 q1 if b0",
+                "X q0",
+                "R q3",
+                "CCX q0 q1 q3",
+                "",
+            ]
+        )
+        _original, _optimized, result = _optimize_text(kickmix, text)
+        self.assertEqual(result.stats["and_replays"], 0)
+        self.assertEqual(result.stats["shared_control_factors"], 0)
+        same_target = "\n".join(
+            [
+                "APPEND_TO_REGISTER q0 r0",
+                "APPEND_TO_REGISTER q1 r0",
+                'REGISTER r0 "x"',
+                "R q2",
+                "CCX q0 q1 q2",
+                "HMR q2 b0",
+                "CZ q0 q1 if b0",
+                "CCX q0 q1 q2",
+                "CX q2 q3",
+                "",
+            ]
+        )
+        _original_same, _optimized_same, same = _optimize_text(kickmix, same_target)
+        self.assertFalse(same.wrote)
+        self.assertEqual(same.stats["and_replays"], 0)
+        self.assertEqual(same.after["toffoli_like"], same.before["toffoli_like"])
+        self.assertEqual(result.after["toffoli_like"], result.before["toffoli_like"])
+        self.assertEqual(result.profile["toffoli"]["match"]["shared_control"]["control_mutated"], 0)
+        self.assertEqual(result.profile["toffoli"]["shared_control_candidates"], 0)
+
+    def test_hot_control_past_the_old_fanout_cap_still_factors(self) -> None:
+        kickmix = _kickmix()
+        builder = kickmix.CircuitBuilder()
+        regs = builder.create_quantum_register(2, "x")
+        hub, hot = regs[0], regs[1]
+        partners = builder.alloc_qubits(64)
+        ancs = builder.alloc_qubits(64)
+        for partner, anc in zip(partners, ancs):
+            builder.ccx(hub, partner, anc)
+        kept = builder.alloc_qubits(1)[0]
+        builder.ccx(hub, hot, kept)
+        extra = builder.alloc_qubits(1)[0]
+        out = builder.alloc_qubits(1)[0]
+        builder.ccx(hub, hot, extra)
+        builder.cx(extra, out)
+        original = builder.finish_circuit()
+        _original, optimized, result = _optimize_circuit(kickmix, original)
+        self.assertTrue(result.wrote, result.reason)
+        self.assertGreaterEqual(result.stats["shared_control_factors"], 1)
+        self.assertLess(result.after["toffoli_like"], result.before["toffoli_like"])
+        _assert_same_shots(self, kickmix, original, optimized, inputs=2)
 
     def test_flipped_and_target_is_not_factored(self) -> None:
         kickmix = _kickmix()
@@ -250,16 +401,54 @@ class RewriteSimulationTests(unittest.TestCase):
 
 
 def _optimize_text(kickmix, text: str):
+    return _optimize_circuit(kickmix, kickmix.Circuit(text))
+
+
+def _optimize_circuit(kickmix, original):
     from vqcc.optimize import optimize_artifact
 
     tmp = tempfile.mkdtemp()
     src = Path(tmp) / "in.kmb"
     dst = Path(tmp) / "out.kmb"
-    original = kickmix.Circuit(text)
     original.to_file(str(src), format="kmb")
     result = optimize_artifact(str(src), str(dst), window=32, memory_budget_bytes=4_000_000, task="dqi")
     optimized = kickmix.Circuit.from_file(str(dst)) if result.wrote else original
     return original, optimized, result
+
+
+def _assert_same_shots(test, kickmix, original, optimized, inputs: int, flag: bool = False) -> None:
+    width = 1 << inputs
+    if flag:
+        width <<= 1
+    for mask in range(width):
+        values = [(mask >> index) & 1 for index in range(inputs)]
+        bit = (mask >> inputs) & 1 if flag else 0
+        left = _shot_set(kickmix, original, values, bit, shots=8)
+        right = _shot_set(kickmix, optimized, values, bit, shots=8)
+        test.assertEqual(left, right, (values, bit))
+
+
+def _shot_set(kickmix, circuit, values: list[int], bit: int, shots: int):
+    sim = kickmix.Simulator(batch_size=shots)
+    for index, value in enumerate(values):
+        for shot in range(shots):
+            sim.write_within_shot(kickmix.q(index), shot, bool(value))
+    if circuit.num_bits:
+        for shot in range(shots):
+            sim.write_within_shot(kickmix.b(0), shot, bool(bit))
+    sim.do(circuit)
+    seen = set()
+    for shot in range(shots):
+        qubits = tuple(
+            int(sim.read_within_shot(kickmix.q(index), shot, out=int))
+            for index in range(circuit.num_qubits)
+        )
+        bits = tuple(
+            int(sim.read_within_shot(kickmix.b(index), shot, out=int))
+            for index in range(circuit.num_bits)
+        )
+        seen.add((qubits, bits, str(sim.read_shot_phase(shot))))
+    return seen
 
 
 def _assert_same_wires(test: unittest.TestCase, kickmix, original, optimized, inputs: int) -> None:

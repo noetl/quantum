@@ -58,15 +58,15 @@ CI repeats through `scripts/validate_playbooks.py`:
 
 | Item | Value |
 | --- | --- |
-| Server | 3.156.2, rechecked 2026-11-11 and again for both playbooks on 2026-11-12 |
-| Result | HTTP 200, `valid: true`, findings empty. The 2026-11-11 response also reported `execute_verdict: accept`. |
-| Schema digest | `sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be` |
-| Previous digest | `sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6` on server 3.156.1 (2026-11-10) and server 3.156.0 / 3.153.0 earlier |
+| Server | `GET /api/dsl/version` reported 3.161.2 on 2026-11-13. The validate body omitted `server_version`. The 2026-11-11 and 2026-11-12 checks recorded server 3.156.2. |
+| Result | HTTP 200, `valid: true`, `execute_verdict: accept`, findings empty, on both playbooks. |
+| Schema digest | `sha256:25071111774314cbf0c83ee9925b53701c2228232574bda3b13b1e27d58b372c` |
+| Previous digest | `sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be` on server 3.156.2 (2026-11-11). Before that, `sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6` on server 3.156.1 (2026-11-10) and server 3.156.0 / 3.153.0 earlier. |
 
 The digest and the server version are copied from
 [docs/dsl/README.md](../dsl/README.md) and from the comments at the top of
-each playbook. This tutorial does not re-post the playbooks. They are not
-edited here.
+each playbook. The 2026-11-13 row is a live recheck. The playbook steps
+were not rewritten.
 
 A transport failure is not a pass. `scripts/validate_playbooks.py` is the
 CI step that performs the POST.
