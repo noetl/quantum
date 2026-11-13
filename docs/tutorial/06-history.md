@@ -22,7 +22,7 @@ The notebook is
 | 2026-11-10 | [PR #15](https://github.com/noetl/quantum/pull/15) merged, `10013fb`. Per-task optimize loop. Implements [#9](https://github.com/noetl/quantum/issues/9). | [Version 6](https://www.kaggle.com/code/kadyapam/noetl-quantum-competition-pipeline-vqcc?scriptVersionId=368231739), scriptVersionId `368231739`. Branch `cursor/per-task-optimize-loop-559e`, HEAD `3af81db`. Run `20261111T000307Z-0d076b2d`. | No change. Evidence: [issue #9 comment](https://github.com/noetl/quantum/issues/9#issuecomment-6785361226). |
 | 2026-11-11 | [PR #16](https://github.com/noetl/quantum/pull/16) merged, `cd0168a`. Clifford shrinks are sent to the verifier. Wider horizon, rotation merge. | [Version 7](https://www.kaggle.com/code/kadyapam/noetl-quantum-competition-pipeline-vqcc?scriptVersionId=368303187), scriptVersionId `368303187`. HEAD `cd0168a`. Run `20261111T052032Z-e1a4aedc`. | Instructions dropped. Costs unchanged. Evidence: [issue #9 comment](https://github.com/noetl/quantum/issues/9#issuecomment-6800303863) and the version 7 log. |
 | 2026-11-12 | [PR #18](https://github.com/noetl/quantum/pull/18) merged, `53304c8`. Measurement uncompute and the Clifford-only gate. Issue [#17](https://github.com/noetl/quantum/issues/17). | [Version 8](https://www.kaggle.com/code/kadyapam/noetl-quantum-competition-pipeline-vqcc?scriptVersionId=368640063), scriptVersionId `368640063`. HEAD `53304c8`. Run `20261112T030658Z-9813e023`. | 0 clean-AND uncomputes. All costs at baseline. Evidence: [issue #17 comment](https://github.com/noetl/quantum/issues/17#issuecomment-6820164452) and [issue #9 comment](https://github.com/noetl/quantum/issues/9#issuecomment-6820165973), matching the version 8 log. |
-| 2026-11-13 | [PR #20](https://github.com/noetl/quantum/pull/20) merged, `da8490e`. Structure profile, shared-control factoring, scratch reuse. Issue [#19](https://github.com/noetl/quantum/issues/19). | **Version 9 — pending.** Running from `da8490e`. No scriptVersionId, run id, or scores are in the repo or in the issue comments read for this page. | **Pending.** Do not fill this row. |
+| 2026-11-13 | [PR #20](https://github.com/noetl/quantum/pull/20) merged, `da8490e`. Structure profile, shared-control factoring, scratch reuse. Issue [#19](https://github.com/noetl/quantum/issues/19). | [Version 9](https://www.kaggle.com/code/kadyapam/noetl-quantum-competition-pipeline-vqcc?scriptVersionId=368976547), scriptVersionId `368976547`. Private notebook. HEAD `da8490e`. Run `20261113T015716Z-fea5b448`. Total 8120.2 s, optimize step 4644 s, exit 0. No submission. | invsqrt retained, verifier `PASS`, score 2068786.6405086848 (Q 260→259). dqi and dfthcsos unchanged. Shared-control factoring and AND-uncompute applied 0 times. Evidence: [issue #19 comment](https://github.com/noetl/quantum/issues/19#issuecomment-6844754721) and [issue #9 comment](https://github.com/noetl/quantum/issues/9#issuecomment-6844754839). |
 
 ## Version 6, in one paragraph
 
@@ -65,10 +65,39 @@ unchanged. `zip_written` false. `leaderboard_score` null.
 
 ## Version 9
 
-**Pending.** The run was started from main `da8490e` (merge of PR #20).
-Results are not in. When they land, add a row here and on
-[issue #9](https://github.com/noetl/quantum/issues/9). Until then this cell
-stays empty on purpose.
+Save & Run All on the private notebook
+`kadyapam/noetl-quantum-competition-pipeline-vqcc`, from main `da8490e`
+(merge of [PR #20](https://github.com/noetl/quantum/pull/20)). Total 8120.2 s.
+Optimize step exit 0, 4644 s (4643.86 s). Run `20261113T015716Z-fea5b448`,
+scriptVersionId `368976547`, seed `20261108`. No Kaggle submission was made.
+
+| Task | Status | Instructions | Charged counts | Score |
+| --- | --- | --- | --- | --- |
+| invsqrt | `accepted` (candidate retained) | 62160 → 57714 | Toffoli 7735, T 1. Q 260 → 259 by scratch-qubit reuse. | 2068786.6405086848. Verifier `PASS`. Δ −7987.593206597 (−0.3846%) from 2076774.233715282. |
+| dqi | `unchanged` (no candidate written) | 86051014 → 84854692 (−1196322) | Toffoli and Q unchanged. Q is 1893. | 24439466758900.453 unchanged. Verifier `PASS` on the baseline. |
+| dfthcsos | `unchanged` (no candidate written) | 2060743 → 2060743 | No instruction change. | 3355599588.3155375 unchanged. Verifier `PASS` on the baseline. |
+
+Shared-control factoring and AND-uncompute applied 0 times on invsqrt, dqi,
+and dfthcsos (`shared_control_factors` 0, `and_uncomputes` 0). The dqi
+rewrite cut about 1.2M instructions and left Toffoli and Q where they were,
+so no candidate was written.
+
+The logged `structure` profile is of the input circuits. It is not a score.
+dfthcsos counts are per angle file.
+
+| | invsqrt | dqi | dfthcsos (per file) |
+| --- | --- | --- | --- |
+| `shared_control_candidates` | 11 | 832 | 0 |
+| `matching_uncompute_pairs` | 0 | 222 | 0 |
+| peak live qubits | 259 | 1893 | 119 |
+| `reuse_headroom_vs_header` | 1 | 0 | 0 |
+
+invsqrt's headroom of 1 is the qubit the retained candidate freed (header
+260, peak live 259). The profile does not show that candidate's own
+live-qubit peak. dqi and dfthcsos have headroom 0.
+
+Evidence: [issue #19 comment](https://github.com/noetl/quantum/issues/19#issuecomment-6844754721)
+and [issue #9 comment](https://github.com/noetl/quantum/issues/9#issuecomment-6844754839).
 
 ## Baseline scores used in every row above
 
@@ -78,5 +107,6 @@ stays empty on purpose.
 | dqi | 24439466758900.453 |
 | dfthcsos | 3355599588.3155375 |
 
-Counts that go with those scores are in [Scoring](04-scoring.md). No version
-in this table has beaten them.
+Counts that go with those scores are in [Scoring](04-scoring.md). Versions 6,
+7, and 8 left every task on these scores. Version 9 retained invsqrt at
+2068786.6405086848. dqi and dfthcsos stayed on the numbers in this table.

@@ -31,45 +31,57 @@ New on this commit, beyond PR #18:
   a real id gap, and only when a named register is present.
 
 No improvement on the reference circuits is claimed from the machine that
-merged PR #20. The sample files were not in that environment.
+merged PR #20. The sample files were not in that environment. The measurement
+is the private Kaggle notebook, recorded below.
 
-## What is running
+## What version 9 measured
 
-**Version 9 is pending.** It is the Kaggle run of this commit
-(`da8490e`) on the private notebook. There is no scriptVersionId, run id,
-elapsed time, or score to report. Do not treat a missing number as zero, and
-do not copy the version 8 scores forward as if they were version 9.
+Version 9 is the Kaggle Save & Run All of commit `da8490e` on the private
+notebook
+[kadyapam/noetl-quantum-competition-pipeline-vqcc](https://www.kaggle.com/code/kadyapam/noetl-quantum-competition-pipeline-vqcc?scriptVersionId=368976547),
+scriptVersionId `368976547`. Run `20261113T015716Z-fea5b448`. Total 8120.2 s.
+Optimize step exit 0, 4644 s. No submission was made. The same record is in
+[the history](Tutorial-06-History).
 
-The useful output, when the log exists, is the `structure` object on each
-optimize step: `shared_control_candidates`, `reuse_headroom_vs_header`,
-clean-AND counts, and the opcode histogram. PR #20's own expectation, which
-this page repeats and does not strengthen: a lower official score is not
-expected unless that report shows shared-control candidates above 0 or reuse
-headroom above 0. dqi would feel a real `Q` drop because `Q` is squared. A
-circuit whose peak live count already equals its header will not move.
-dfthcsos's official `Q` is 730 while each angle file is width 119, so a
-narrower file is not assumed to change that score. The verifier still
-decides.
+| Task | Candidate | Verifier | Official score |
+| --- | --- | --- | --- |
+| invsqrt | retained | `PASS` | 2068786.6405086848, from the version 8 baseline 2076774.233715282 (Δ −7987.593206597, −0.3846%). Q 260 → 259 by scratch-qubit reuse. Toffoli 7735, T 1. Instructions 62160 → 57714. |
+| dqi | none written | `PASS` on the baseline | 24439466758900.453 unchanged. Instructions 86051014 → 84854692 (about 1.2M). Toffoli and Q unchanged. |
+| dfthcsos | none written | `PASS` on the baseline | 3355599588.3155375 unchanged. |
+
+PR #20's shared-control factoring and AND-uncompute applied 0 times on all
+three tasks.
+
+Input-circuit `structure` (not a score), invsqrt / dqi / dfthcsos:
+`shared_control_candidates` 11 / 832 / 0, `matching_uncompute_pairs`
+0 / 222 / 0, peak live qubits 259 / 1893 / 119, `reuse_headroom_vs_header`
+1 / 0 / 0. dfthcsos figures are per angle file. invsqrt's headroom of 1 is
+the qubit the retained candidate freed. dqi's peak live count equals its
+header (1893), so a dqi gain has to come from the Toffoli count. dfthcsos's
+official `Q` is 730; a per-file peak of 119 with headroom 0 left that score
+where it was.
+
+Evidence: [issue #19 comment](https://github.com/noetl/quantum/issues/19#issuecomment-6844754721)
+and [issue #9 comment](https://github.com/noetl/quantum/issues/9#issuecomment-6844754839).
 
 ## What to do next
 
-1. Let version 9 finish. Paste the provenance summary onto
-   [issue #9](https://github.com/noetl/quantum/issues/9) using the list in
-   [Running on Kaggle](Tutorial-05-Kaggle). Leave version 9 blank in
-   [the history](Tutorial-06-History) until that comment exists.
-2. Read `structure` before writing another pass. If shared-control
-   candidates and reuse headroom are both 0, another Clifford or clean-AND
-   pass will not move the score. Version 8 already showed the clean-AND
-   uncompute count is 0.
-3. Spend the next code change on something the cost formula charges:
-   Toffoli count, T count, the invsqrt fine-rotation term, or `Q`. Issue
-   [#19](https://github.com/noetl/quantum/issues/19) still lists cheaper
-   Toffoli constructions (adders, temporary-AND ladders) for blocks the
-   profile actually finds. Keep the fail-closed gate.
+1. Next lever: dqi Toffoli reduction. The input profile has 832
+   shared-control candidates and 222 matching uncompute pairs, and both new
+   transforms applied 0 times. Issue
+   [#19](https://github.com/noetl/quantum/issues/19) is where to find out why
+   shared-control factoring and AND-uncompute do not fire. Qubits stay 1893
+   with reuse headroom 0.
+2. Keep the fail-closed gate. invsqrt cleared it: official `PASS` and a
+   strictly lower JSON `score`. dqi's shorter instruction list did not,
+   because Toffoli and Q were unchanged, so no candidate was written.
+3. invsqrt's reuse headroom on the input is the one qubit already taken.
+   Further invsqrt gains need a Toffoli cut. The profile lists 11
+   shared-control candidates there, and that transform applied 0 times.
 4. Do not edit FR-006, FR-007, or FR-008 in the spec until the clarification
    in [Open questions](Tutorial-09-Open-Questions) is accepted. The logs are
    evidence. They are not a spec change.
-5. Do not submit, publish, or share.
+5. Do not submit, publish, or share. Version 9 did not.
 
 ## What is already settled, so it is not next
 
@@ -81,3 +93,6 @@ decides.
   column. Issue [#13](https://github.com/noetl/quantum/issues/13) is closed.
 - Clifford cancellation is not a cost reduction. Versions 7 and 8 measured
   that. The optimize step no longer sends those files to the verifier.
+- Scratch-qubit reuse on version 9 lowered invsqrt from `Q` 260 to 259 and
+  kept the official score 2068786.6405086848. That qubit is the input
+  profile's reuse headroom. It is not the next lever.

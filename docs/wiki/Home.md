@@ -14,7 +14,7 @@ The team briefing for this tree is the [tutorial](Tutorial).
 
 ## What runs today
 
-`noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` on the PyPI CLI **noetl 5.3.2**, after the document passes `POST https://noetl.ai/api/dsl/validate`. Rechecked 2026-11-11 on server **3.156.2** (`valid: true`, `execute_verdict: accept`, findings empty). Schema digest `sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be`. The 2026-11-10 digest on server 3.156.1 was `sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6`. The workflow's first step is named `start`.
+`noetl run playbooks/vqcc_pipeline.yaml --runtime local --json` on the PyPI CLI **noetl 5.3.2**, after the document passes `POST https://noetl.ai/api/dsl/validate`. Rechecked 2026-11-13 (`valid: true`, `execute_verdict: accept`, findings empty). `GET /api/dsl/version` reported server **3.161.2**. Schema digest `sha256:25071111774314cbf0c83ee9925b53701c2228232574bda3b13b1e27d58b372c`. The 2026-11-11 digest on server 3.156.2 was `sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be`. The 2026-11-10 digest on server 3.156.1 was `sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6`. The workflow's first step is named `start`.
 
 With no competition data the playbook:
 

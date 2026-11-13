@@ -37,9 +37,12 @@ the packaging gate. It is not an optimizer.
    circuit," not "rewrite a verified one."
 6. [Issue 19](https://github.com/noetl/quantum/issues/19). The optimize step
    profiles the input and can factor a repeated clean AND or reuse a
-   scratch id after a verified reset. Version 8 left the official scores
-   at baseline. Whether the sample files have any of that structure is
-   what the next Kaggle run's `structure` field reports. See
+   scratch id after a verified reset. Version 9 (run
+   `20261113T015716Z-fea5b448`) retained invsqrt at Q 259 and left dqi and
+   dfthcsos on the version 8 scores. Shared-control factoring and
+   AND-uncompute applied 0 times. The next lever is dqi Toffoli reduction:
+   find out why those transforms do not fire. See
+   [Current work](Tutorial-07-Current-Work) and
    [Circuit structure](Circuit-Structure).
 6. [Issue 3](https://github.com/noetl/quantum/issues/3). Competition-quality
    generators, as opposed to peephole rewrites of a baseline, are still not
