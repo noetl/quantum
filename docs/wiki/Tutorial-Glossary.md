@@ -44,4 +44,4 @@ are the ones this tutorial uses. Nothing here is a measured result.
 | Structural fixture | A kickmix file this repo builds when `mode=structural`. Labeled so it cannot count as competition-verified. |
 | `structure` | Profile logged by the optimize step: opcodes, lifetimes, peak live qubits, repeated blocks. Not a score. |
 | US1 … US5 | User Story 1 through User Story 5 in `specs/001-noetl-pipeline/spec.md`. |
-| Version 9 | **Pending.** The Kaggle run of main `da8490e`. No results in this briefing. |
+| Version 9 | The Kaggle run of main `da8490e` on the private notebook, scriptVersionId `368976547`, run `20261113T015716Z-fea5b448`. The measured outcome is in [Optimization history](Tutorial-06-History). |

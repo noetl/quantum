@@ -3,9 +3,11 @@
 The Kaggle sample circuits are not in this repository. Competition data
 stays out of git. This page is the structure report for issue 19: what the
 version 8 run already showed, what kickmix's own blocks look like, and what
-the optimize step will log on the next Kaggle run.
+the optimize step logs as `structure`.
 
-None of the numbers below is a new official score. Version 8's scores are
+None of the numbers in the sections below is the version 9 official score.
+Version 9's scores and the sample-file profile are in
+[Optimization history](Tutorial-06-History). Version 8's scores are
 external evidence from that notebook. The kickmix figures are measurements
 of circuits this environment built with kickmix 1.0.0. They are not the
 reference files.
@@ -68,7 +70,7 @@ A ripple-like link in that profile is a `CCX` whose three qubits are each
 one more than the previous `CCX`. The multiplier has 2 such links. That is
 a shape count, not an adder rewrite.
 
-## What the next Kaggle run logs
+## What the optimize step logs
 
 `playbooks/vqcc_optimize.yaml` profiles the input inside the optimize step.
 The step JSON field `structure` (and each attempt's `structure`) holds:
@@ -117,3 +119,26 @@ Until the logged `structure` for the sample files shows
 the official scores should be expected to stay at the version 8 baselines.
 A candidate is still kept only on verifier `PASS` and a strictly lower
 JSON `score`.
+
+## What version 9 measured
+
+Private notebook, scriptVersionId `368976547`, run
+`20261113T015716Z-fea5b448`, main `da8490e`. Optimize exit 0. No submission.
+
+Input-circuit profile: `shared_control_candidates` 11 / 832 / 0,
+`matching_uncompute_pairs` 0 / 222 / 0, peak live qubits 259 / 1893 / 119,
+`reuse_headroom_vs_header` 1 / 0 / 0 (invsqrt / dqi / dfthcsos; dfthcsos
+per file).
+
+invsqrt retained a candidate, verifier `PASS`, score 2068786.6405086848
+against 2076774.233715282. Q 260 → 259 by scratch-qubit reuse. Toffoli
+stayed 7735 and T stayed 1. Shared-control factoring and AND-uncompute
+applied 0 times on all three tasks. dqi's rewrite cut about 1.2M
+instructions (86051014 → 84854692) and left Toffoli and Q unchanged, so
+no candidate was written. Score 24439466758900.453. dfthcsos wrote no
+candidate. Score 3355599588.3155375.
+
+The next lever is dqi Toffoli reduction. The profile has 832
+shared-control candidates and 222 matching uncompute pairs, both
+transforms applied 0 times, and reuse headroom is 0. Detail is in
+[Current work](Tutorial-07-Current-Work).

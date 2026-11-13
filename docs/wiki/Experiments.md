@@ -173,12 +173,16 @@ What this environment did run, kickmix 1.0.0, on circuits it built:
 `kickmix==1.0.0`: 87 tests, 1 skipped. The skip is the kickmix-missing
 guard, which does not run when kickmix is installed.
 
-No effect on the version 8 scores is claimed. The sample files are not
-here. The next Kaggle optimize run logs `structure` so those files can be
-read the same way. A lower score is not expected unless that report shows
-shared-control candidates or reuse headroom. dqi squares `Q`, which is why
-headroom would matter, and why a circuit whose peak live count already
-equals its header will not move.
+No effect on the version 8 scores is claimed from this environment. The
+sample files are not here.
+
+Version 9 is the Kaggle run of that code (`20261113T015716Z-fea5b448`,
+main `da8490e`, scriptVersionId `368976547`). It is not a row in the table
+above. The notebook is private, and no submission was made. invsqrt was
+retained at 2068786.6405086848 (Q 260 → 259). dqi and dfthcsos wrote no
+candidate. Shared-control factoring and AND-uncompute applied 0 times.
+The input profile and the next lever are in
+[Current work](Tutorial-07-Current-Work).
 
 ## How to log a real attempt later
 
