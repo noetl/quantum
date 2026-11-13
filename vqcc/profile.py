@@ -12,7 +12,8 @@ What it counts, in one pass:
 - opcode histogram
 - repeated 32-gate windows, as lossy heavy hitters of a qubit-relative hash
 - Toffoli shape: clean AND opens, matching uncompute pairs, shared-control
-  candidates, adjacent same-control runs, ripple-like shifts, AND cascades
+  candidates, and why each of those candidates is or is not a strict match,
+  adjacent same-control runs, ripple-like shifts, AND cascades
 - qubit lifetimes. A qubit is live from its first use after a verified
   ``|0>`` until the next unconditional ``R`` or ``HMR``. A second peak also
   treats a matching clean-AND uncompute as death. Named register ids stay
@@ -47,6 +48,32 @@ _PAIR_CAP = 4096
 _BLOCK_CAP = 4096
 _LIVE_CAP = 200_000
 _TOP = 5
+_MATCH_REASONS = (
+    "eligible",
+    "control_mutated",
+    "condition_bit_written",
+    "condition_mismatch",
+)
+
+
+def firing_bits(stack, explicit: int | None) -> frozenset[int]:
+    """Bits that are 1 when a gate under this stack and explicit condition fires."""
+
+    bits = set(stack)
+    if explicit is not None:
+        bits.add(explicit)
+    return frozenset(bits)
+
+
+class _ProfAnd:
+    """Loose AND record. ``invalid`` is why the transform will not use it."""
+
+    __slots__ = ("controls", "required", "invalid")
+
+    def __init__(self, controls: frozenset[int], required: frozenset[int]) -> None:
+        self.controls = controls
+        self.required = required
+        self.invalid: str | None = None
 
 _NAME_CODE = {
     "NEG": 1,
@@ -112,9 +139,14 @@ class StructureProfiler:
         self._pairs: dict[tuple[int, int], int] = {}
         self._blocks: dict[int, tuple[int, str]] = {}
         self._buf: list[Op] = []
-        self._open: dict[int, frozenset[int]] = {}
+        self._cond: list[int] = []
+        self._open: dict[int, _ProfAnd] = {}
         self._by_q: dict[int, set[int]] = {}
+        self._by_bit: dict[int, set[int]] = {}
         self._proven_zero: set[int] = set()
+        self.measurement_and_closes = 0
+        self._shared_match = {reason: 0 for reason in _MATCH_REASONS}
+        self._uncompute_match = {reason: 0 for reason in _MATCH_REASONS}
         self._proven_dirty: set[int] = set()
         self._prev_ccx: tuple[int, ...] | None = None
         self.max_id = -1
@@ -142,11 +174,16 @@ class StructureProfiler:
             self._buf.clear()
         if op.name == "PUSH_CONDITION":
             self.stack += 1
+            if op.condition is not None:
+                self._cond.append(op.condition)
             return
         if op.name == "POP_CONDITION":
             if self.stack:
                 self.stack -= 1
+            if self._cond:
+                self._cond.pop()
             return
+        self._invalidate_writes(op)
         hard_reset = (
             op.name in {"R", "HMR"}
             and bool(op.qubits)
@@ -161,6 +198,8 @@ class StructureProfiler:
                     self.unconditional_hmr += 1
             else:
                 self.conditional_resets += 1
+            if op.qubits[0] in self._open:
+                self.measurement_and_closes += 1
         for qubit in op.qubits:
             self._touch_seen(qubit)
             self._born(qubit)
@@ -220,6 +259,20 @@ class StructureProfiler:
                 "clean_and_opens": self.clean_and_opens,
                 "matching_uncompute_pairs": self.matching_uncompute_pairs,
                 "shared_control_candidates": self.shared_control_candidates,
+                "measurement_and_closes": self.measurement_and_closes,
+                "match": {
+                    "shared_control": dict(self._shared_match),
+                    "uncompute": dict(self._uncompute_match),
+                    "note": (
+                        "One label per profiled candidate. The four labels sum "
+                        "to that candidate count. eligible is a strict match the "
+                        "transform can apply. control_mutated and "
+                        "condition_bit_written mean the profile still counted an "
+                        "AND after its bit stopped being the AND. "
+                        "condition_mismatch is a live AND whose firing condition "
+                        "does not match the later CCX. Not a score."
+                    ),
+                },
                 "and_cascade_links": self.and_cascade_links,
                 "ripple_like_links": self.ripple_like_links,
                 "longest_same_control_run": self.longest_same_control_run,
@@ -278,33 +331,80 @@ class StructureProfiler:
         self._match_open(op, controls, target)
 
     def _match_open(self, op: Op, controls: frozenset[int], target: int) -> None:
-        record = self._open.get(target)
-        if record is not None and record == controls and len(controls) == 2 and target not in controls:
+        active = firing_bits(self._cond, op.condition)
+        view = self._open.get(target)
+        if view is not None and view.controls == controls and len(controls) == 2 and target not in controls:
+            if view.invalid is not None:
+                reason = view.invalid
+            elif view.required == active:
+                reason = "eligible"
+            else:
+                reason = "condition_mismatch"
+            self._uncompute_match[reason] += 1
             self.matching_uncompute_pairs += 1
             self._drop(target)
             self._mark_zero(target)
             self._die_uncompute(target)
             return
+        reason = self._shared_reason(op, controls, target, active)
+        if reason is not None:
+            self._shared_match[reason] += 1
+            self.shared_control_candidates += 1
+        if self._is_zero(target) and len(controls) == 2 and target not in controls:
+            if len(self._open) < 100_000:
+                self.clean_and_opens += 1
+                required = firing_bits(self._cond, op.condition)
+                self._open[target] = _ProfAnd(controls, required)
+                self._proven_dirty.add(target)
+                self._proven_zero.discard(target)
+                for qubit in list(controls) + [target]:
+                    self._by_q.setdefault(qubit, set()).add(target)
+                for bit in required:
+                    self._by_bit.setdefault(bit, set()).add(target)
+                if len(self._open) > self._peak_open:
+                    self._peak_open = len(self._open)
+            return
+        self._kill(target)
+
+    def _shared_reason(
+        self,
+        op: Op,
+        controls: frozenset[int],
+        target: int,
+        active: frozenset[int],
+    ) -> str | None:
+        reason = None
         left = self._by_q.get(op.qubits[0], ())
         right = self._by_q.get(op.qubits[1], ())
         for candidate in left:
             if candidate == target or candidate not in right:
                 continue
-            if self._open.get(candidate) == controls:
-                self.shared_control_candidates += 1
-                break
-        if self._is_zero(target) and len(controls) == 2 and target not in controls:
-            if len(self._open) < 100_000:
-                self.clean_and_opens += 1
-                self._open[target] = controls
-                self._proven_dirty.add(target)
-                self._proven_zero.discard(target)
-                for qubit in list(controls) + [target]:
-                    self._by_q.setdefault(qubit, set()).add(target)
-                if len(self._open) > self._peak_open:
-                    self._peak_open = len(self._open)
-            return
-        self._kill(target)
+            view = self._open.get(candidate)
+            if view is None or view.controls != controls:
+                continue
+            if view.invalid is None and view.required <= active:
+                return "eligible"
+            if reason is None:
+                reason = view.invalid or "condition_mismatch"
+        return reason
+
+    def _invalidate_writes(self, op: Op) -> None:
+        bits = _bit_writes(op)
+        if bits:
+            touched: list[int] = []
+            for bit in bits:
+                touched.extend(self._by_bit.get(bit, ()))
+            for target in touched:
+                view = self._open.get(target)
+                if view is not None and view.invalid is None and bits & view.required:
+                    view.invalid = "condition_bit_written"
+        for qubit in _value_writes(op):
+            for target in list(self._by_q.get(qubit, ())):
+                view = self._open.get(target)
+                if view is None or view.invalid is not None:
+                    continue
+                if qubit in view.controls:
+                    view.invalid = "control_mutated"
 
     def _is_zero(self, qubit: int) -> bool:
         if qubit in self._open or qubit in self._proven_dirty:
@@ -323,16 +423,23 @@ class StructureProfiler:
         self._proven_dirty.add(qubit)
 
     def _drop(self, target: int) -> None:
-        controls = self._open.pop(target, None)
-        if controls is None:
+        view = self._open.pop(target, None)
+        if view is None:
             return
-        for qubit in controls | {target}:
+        for qubit in view.controls | {target}:
             bucket = self._by_q.get(qubit)
             if bucket is None:
                 continue
             bucket.discard(target)
             if not bucket:
                 del self._by_q[qubit]
+        for bit in view.required:
+            bucket = self._by_bit.get(bit)
+            if bucket is None:
+                continue
+            bucket.discard(target)
+            if not bucket:
+                del self._by_bit[bit]
 
     def _touch_seen(self, qubit: int) -> None:
         if qubit > self.max_id:
@@ -408,6 +515,14 @@ class StructureProfiler:
             self._blocks[digest] = (1, preview)
             return
         self._blocks[digest] = (current[0] + 1, current[1])
+
+
+def _bit_writes(op: Op) -> set[int]:
+    if op.name in {"BIT_STORE0", "BIT_STORE1", "BIT_INVERT"} and op.bits:
+        return {op.bits[0]}
+    if op.name == "HMR" and op.bits:
+        return {op.bits[0]}
+    return set()
 
 
 def _value_writes(op: Op) -> set[int]:

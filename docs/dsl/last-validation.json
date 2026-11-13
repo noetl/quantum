@@ -8,9 +8,9 @@
       "NOETL_TOOL_KIND_MCP": true
     },
     "orchestrate_core_version": "0.1.0",
-    "schema_digest": "sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be",
+    "schema_digest": "sha256:25071111774314cbf0c83ee9925b53701c2228232574bda3b13b1e27d58b372c",
     "schema_id": "https://noetl.ai/schema/v2/playbook.schema.json",
-    "server_version": "3.156.2",
+    "server_version": "3.161.2",
     "_http_status": 200
   },
   "playbooks": [

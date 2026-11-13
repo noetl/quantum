@@ -144,7 +144,18 @@ write, because the published costs do not charge the same gates.
   later `CCX` with the same controls and a different target is replaced by
   `CX` from the AND target. The compute `CCX` stays. A phase on the AND
   target does not block the copy. A bit flip of the target or of a control
-  drops the record, and the second `CCX` is left alone.
+  drops the record, and the second `CCX` is left alone. The later `CCX` may
+  sit under a narrower condition than the one that computed the AND. The
+  `CX` keeps that narrower condition. A same-target pair whose firing
+  conditions differ is not an uncompute.
+- Measurement replay. Kickmix `del_and` (`HMR` plus `CZ` on the two
+  controls) can be delayed while the controls stay put. A later `CCX` of
+  those controls onto a different target becomes `CX` from the qubit that
+  still holds the AND. A recompute onto that same qubit emits the delayed
+  pair first and keeps the `CCX`. A write of a control, a use of the
+  measured bit, or a use of the AND qubit emits the delayed pair first.
+  Version 9's `and_uncomputes: 0` is the case where the circuit already
+  used `del_and`, so there was no second `CCX` to replace until this delay.
 - Qubit lifetime reuse. Scratch wires are renamed onto an id that is known
   `|0>`: a real gap in the id space, or an id freed by an unconditional
   `R` or `HMR`. The physical id is fixed for one lifetime, so `SWAP` and
