@@ -247,6 +247,14 @@ that value back before the later `CCX`.
 or `relabelled`. A single `X`, `CX`, `CCX`, `SWAP`, or `CSWAP` that is
 not paired off stays `open`.
 
+The matcher does not walk every live AND on every gate. A write updates
+the per-qubit pending stack, and the AND is removed from the watch index
+after its first control mutation. The stack keeps at most 8 open writes
+(`OPEN_WRITE_LIMIT` in `vqcc/qubit_values.py`). Past that cap the AND is
+`open` and is not rewritten. An unconditional `SWAP` permutes values and
+does not spend the cap, so a routing chain stays exact. Giving up is
+incomplete and sound: a control the log cannot prove is left unchanged.
+
 `undone` and `relabelled` matches are `eligible` when the firing condition
 also matches. An `X`·`X` on the AND target is the same kind of restoration
 for the stored bit; the controls were not written, so it does not appear

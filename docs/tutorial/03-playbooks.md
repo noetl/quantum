@@ -60,7 +60,11 @@ Defaults on the optimize playbook, from the workload block:
 
 | Key | Value | Meaning |
 | --- | --- | --- |
-| `time_budget_s` | 14400 | Cap for one optimize step. Not a target runtime. |
+| `optimize_budget_s` | 32400 | Wall clock for every optimize step together (9 hours). Stays under Kaggle's 12-hour kill. Not a target runtime. `VQCC_OPTIMIZE_BUDGET_S` overrides it. |
+| `transform_budget_s` | 7200 | Cap for each streaming transform (`profile`, `restore`, `cancel`, `reuse`). On expiry that task keeps the unmodified circuit. `VQCC_TRANSFORM_BUDGET_S` overrides it. |
+| `invsqrt_budget_s` | 4860 | invsqrt's share of `optimize_budget_s` (15%). |
+| `dqi_budget_s` | 22680 | dqi's share (70%). dqi is the large circuit. |
+| `dfthcsos_budget_s` | 4860 | dfthcsos's share (15%). The three shares sum to 32400. `VQCC_TASK_BUDGET_S` overrides one task's share. |
 | `memory_budget_bytes` | 2147483648 | Files above 2 GiB are left untouched. dqi's sample is about 886 MB and is mapped, not loaded as a circuit. |
 | `window` | 4096 | Cancellation horizon. The search walks gates that share a qubit or a bit. Z-rotation merging ignores this horizon. |
 | `max_candidates` | 1 | At most one candidate per task. The code refuses a value above 3. |

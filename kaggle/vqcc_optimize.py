@@ -38,8 +38,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(line_buffering=True)
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -52,6 +58,18 @@ from vqcc.pipeline import main as pipeline_main  # noqa: E402
 KAGGLE_DATA = Path(
     "/kaggle/input/competitions/google-verifiable-quantum-circuit-compilation"
 )
+# Nine hours for every optimize step together, under the 12-hour Kaggle kill.
+# dqi is the large circuit. Each transform is capped on its own.
+_OPTIMIZE_BUDGET_S = 9 * 60 * 60
+_TRANSFORM_BUDGET_S = 2 * 60 * 60
+_TASK_SHARE = {"invsqrt": 0.15, "dqi": 0.70, "dfthcsos": 0.15}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    return float(raw)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,12 +79,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", type=Path, default=ROOT)
     parser.add_argument("--seed", default=REFERENCE_SEED)
     parser.add_argument("--task", choices=TASKS, default=None)
-    parser.add_argument("--time-budget-s", type=float, default=14400)
+    parser.add_argument("--time-budget-s", type=float, default=None)
+    parser.add_argument("--transform-budget-s", type=float, default=None)
+    parser.add_argument("--optimize-budget-s", type=float, default=None)
     parser.add_argument("--memory-budget-bytes", type=int, default=2 * 1024**3)
     parser.add_argument("--window", type=int, default=4096)
     parser.add_argument("--max-candidates", type=int, default=1)
     args = parser.parse_args(argv)
     tasks = (args.task,) if args.task else TASKS
+    overall = args.optimize_budget_s
+    if overall is None:
+        overall = _env_float("VQCC_OPTIMIZE_BUDGET_S", _OPTIMIZE_BUDGET_S)
+    transform = args.transform_budget_s
+    if transform is None:
+        transform = _env_float("VQCC_TRANSFORM_BUDGET_S", _TRANSFORM_BUDGET_S)
     common = [
         "--repo-root",
         str(args.repo_root),
@@ -91,13 +117,20 @@ def main(argv: list[str] | None = None) -> int:
     for task in tasks:
         steps.append(["verify-official", "--task", task, "--seed", str(args.seed), *common])
     for task in tasks:
+        task_budget = args.time_budget_s
+        if task_budget is None:
+            task_budget = _env_float("VQCC_TASK_BUDGET_S", _TASK_SHARE[task] * overall)
         steps.append(
             [
                 "optimize",
                 "--task",
                 task,
                 "--time-budget-s",
-                str(args.time_budget_s),
+                str(task_budget),
+                "--transform-budget-s",
+                str(transform),
+                "--optimize-budget-s",
+                str(overall),
                 "--memory-budget-bytes",
                 str(args.memory_budget_bytes),
                 "--window",
@@ -116,6 +149,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     last = 0
     for argv_step in steps:
+        task_name = "-"
+        if "--task" in argv_step:
+            task_name = argv_step[argv_step.index("--task") + 1]
+        print(f"progress step={argv_step[0]} task={task_name}", flush=True)
         code = pipeline_main(argv_step)
         last = code
         if code != 0:

@@ -14,6 +14,7 @@ import json
 import math
 import os
 import shutil
+import sys
 import subprocess
 import time
 import uuid
@@ -27,7 +28,12 @@ from vqcc.official_verifier import (
     discover_dataset_root,
     run_official_task,
 )
-from vqcc.optimize import optimize_artifact
+from vqcc.optimize import (
+    DEFAULT_OPTIMIZE_BUDGET_S,
+    DEFAULT_TRANSFORM_BUDGET_S,
+    optimize_artifact,
+    task_budget_seconds,
+)
 from vqcc.formulas import (
     E_GAP_FLOOR_HA,
     FROBENIUS_TOLERANCE_HA,
@@ -273,12 +279,27 @@ def verify_official(
     return _step("verify_official", state, **report)
 
 
+def _env_seconds(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise PipelineError(f"{name} must be a number of seconds") from exc
+    if value < 0:
+        raise PipelineError(f"{name} must be non-negative")
+    return value
+
+
 def optimize_task(
     repo_root: Path,
     runs_root: Path,
     task: str,
     *,
     time_budget_s: float | None = None,
+    transform_budget_s: float | None = None,
+    optimize_budget_s: float | None = None,
     memory_budget_bytes: int = 2 * 1024**3,
     window: int = 32,
     max_candidates: int = 1,
@@ -301,13 +322,39 @@ def optimize_task(
         raise PipelineError("memory budget must be positive")
     if time_budget_s is not None and time_budget_s < 0:
         raise PipelineError("time budget must be non-negative")
+    if transform_budget_s is not None and transform_budget_s < 0:
+        raise PipelineError("transform budget must be non-negative")
+    if optimize_budget_s is not None and optimize_budget_s < 0:
+        raise PipelineError("optimize budget must be non-negative")
 
     state, run_dir = _load(repo_root, runs_root)
-    budget = float(2 * DEFAULT_TIMEOUT_S[task] if time_budget_s is None else time_budget_s)
+    overall = optimize_budget_s
+    if overall is None:
+        overall = _env_seconds("VQCC_OPTIMIZE_BUDGET_S")
+    if overall is None:
+        overall = DEFAULT_OPTIMIZE_BUDGET_S
+    if time_budget_s is None:
+        time_budget_s = _env_seconds("VQCC_TASK_BUDGET_S")
+    if transform_budget_s is None:
+        transform_budget_s = _env_seconds("VQCC_TRANSFORM_BUDGET_S")
+    if transform_budget_s is None:
+        transform_budget_s = DEFAULT_TRANSFORM_BUDGET_S
+    now = time.time()
+    clock = state.get("optimize_clock")
+    if not isinstance(clock, dict) or "deadline_epoch" not in clock:
+        clock = {"deadline_epoch": now + float(overall), "overall_s": float(overall)}
+        state["optimize_clock"] = clock
+        _save(run_dir, state)
+    remaining = max(0.0, float(clock["deadline_epoch"]) - now)
+    share = task_budget_seconds(task, float(clock.get("overall_s") or overall))
+    budget = min(share if time_budget_s is None else float(time_budget_s), remaining)
+    transform_budget_s = min(float(transform_budget_s), budget)
     deadline = time.monotonic() + budget
     summary = _optimize_header(
         task,
         budget=budget,
+        transform_budget_s=transform_budget_s,
+        optimize_budget_s=float(clock.get("overall_s") or overall),
         memory_budget_bytes=memory_budget_bytes,
         window=window,
         max_candidates=max_candidates,
@@ -399,13 +446,22 @@ def optimize_task(
                 window=window,
                 memory_budget_bytes=memory_budget_bytes,
                 deadline=time.monotonic() + remaining,
+                transform_budget_s=transform_budget_s,
                 task=task,
             )
         except (KickmixFormatError, OptimizeBudgetError) as exc:
             _delete_path(proposal)
+            timed_out = "time budget" in str(exc)
+            if timed_out:
+                print(
+                    f"progress task={task} transforms=profile,restore,cancel,reuse "
+                    "event=budget_fallback",
+                    file=sys.stderr,
+                    flush=True,
+                )
             attempts.append(
                 {
-                    "status": "not_rewritten",
+                    "status": "budget" if timed_out else "not_rewritten",
                     "proposal_retained": False,
                     "reason": f"{exc} The previous artifact was kept.",
                 }
@@ -861,6 +917,8 @@ def _optimize_header(
     task: str,
     *,
     budget: float,
+    transform_budget_s: float,
+    optimize_budget_s: float,
     memory_budget_bytes: int,
     window: int,
     max_candidates: int,
@@ -875,6 +933,8 @@ def _optimize_header(
             "(acceptance scenarios 1 and 2), FR-001, FR-003, FR-004, FR-010, FR-011"
         ),
         "time_budget_s": budget,
+        "transform_budget_s": transform_budget_s,
+        "optimize_budget_s": optimize_budget_s,
         "memory_budget_bytes": memory_budget_bytes,
         "window": window,
         "max_candidates": max_candidates,

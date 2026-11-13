@@ -198,9 +198,15 @@ retained score (FR-004, FR-011). Otherwise the previous path stays. One
 optimize step never writes another task's files (user story 2, scenario 1).
 
 Defaults are one candidate, a 4096-gate cancellation horizon, a 2 GiB
-per-file budget, and a 14400 s cap on the optimize step. `max_candidates`
-is limited to 3. `prepare` in this playbook does not pass
-`--package-when-verified`.
+per-file budget, and a 32400 s (9 hour) cap on the optimize phase.
+That cap is split invsqrt 4860 s, dqi 22680 s, dfthcsos 4860 s. Each
+streaming transform (`profile`, `restore`, `cancel`, `reuse`) is also
+capped at 7200 s. When a transform or a task runs out of time, that task
+keeps the unmodified circuit and the playbook continues, so the run still
+writes its outputs under Kaggle's 12-hour kill. `VQCC_OPTIMIZE_BUDGET_S`,
+`VQCC_TRANSFORM_BUDGET_S`, and `VQCC_TASK_BUDGET_S` override those
+numbers. `max_candidates` is limited to 3. `prepare` in this playbook
+does not pass `--package-when-verified`.
 
 ## Costs
 

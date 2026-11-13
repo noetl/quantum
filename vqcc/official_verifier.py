@@ -324,6 +324,7 @@ def _launch_environment(root: Path, script: Path) -> tuple[Path, dict[str, str],
                 extra.append(str(path if path.is_absolute() else (root / path).resolve()))
         source = "verifier_launch.json"
     env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
     previous = env.get("PYTHONPATH")
     parts = extra + ([previous] if previous else [])
     env["PYTHONPATH"] = os.pathsep.join(parts)

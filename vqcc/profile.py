@@ -90,6 +90,7 @@ class _ProfAnd:
         "sig",
         "first_mutation",
         "target",
+        "base_epoch",
     )
 
     def __init__(self, controls: frozenset[int], required: frozenset[int]) -> None:
@@ -104,6 +105,7 @@ class _ProfAnd:
         self.sig: frozenset = frozenset()
         self.first_mutation: str | None = None
         self.target = -1
+        self.base_epoch: dict[int, int] = {}
 
 _NAME_CODE = {
     "NEG": 1,
@@ -171,7 +173,11 @@ class StructureProfiler:
         self._buf: list[Op] = []
         self._cond: list[int] = []
         self._open: dict[int, _ProfAnd] = {}
-        self._by_q: dict[int, set[int]] = {}
+        # ANDs whose first control mutation has not been seen. Keyed by the
+        # origin control qubit. A write touches this bucket once, records
+        # the opcode, and removes the AND. Later gates do not scan it.
+        self._watch: dict[int, set[int]] = {}
+        self._by_origin: dict[frozenset, set[int]] = {}
         self._by_bit: dict[int, set[int]] = {}
         self._proven_zero: set[int] = set()
         self.measurement_and_closes = 0
@@ -331,7 +337,9 @@ class StructureProfiler:
                             "CSWAP·CSWAP, SWAP·SWAP). relabelled means an unconditional "
                             "SWAP moved that value onto the later CCX's controls. "
                             "undone and relabelled are not part of control_mutated. "
-                            "A reset or a measurement is never undone. Not a score."
+                            "A reset or a measurement is never undone. A control whose "
+                            "pending write stack overflows the per-qubit cap is "
+                            "open and is not rewritten. Not a score."
                         ),
                     },
                     "note": (
@@ -467,6 +475,7 @@ class StructureProfiler:
         view.ctrl_vals = held
         view.and_val = self.values.read(target)
         view.sig = frozenset(held)
+        view.base_epoch = {qubit: self.values.epoch(qubit) for qubit in controls}
         self._open[target] = view
         self.clean_and_opens += 1
         self._proven_dirty.add(target)
@@ -482,38 +491,35 @@ class StructureProfiler:
         target: int,
         active: frozenset[int],
     ) -> tuple[str | None, _ProfAnd | None, str | None]:
+        # Value signature and the origin control pair. Neither walk is the
+        # set of every AND that merely touches one of these qubits.
         sig = frozenset((self.values.read(op.qubits[0]), self.values.read(op.qubits[1])))
-        seen: set[int] = set()
-        found: list[_ProfAnd] = []
-        for candidate in self._by_sig.get(sig, ()):
-            if candidate == target or candidate in seen:
-                continue
-            view = self._open.get(candidate)
-            if view is None:
-                continue
-            seen.add(candidate)
-            found.append(view)
-        for qubit in op.qubits[:2]:
-            for candidate in self._by_q.get(qubit, ()):
-                if candidate == target or candidate in seen:
-                    continue
-                view = self._open.get(candidate)
-                if view is None:
-                    continue
-                if view.origin != controls and view.controls != controls:
-                    continue
-                seen.add(candidate)
-                found.append(view)
         best_rank = 9
         best: tuple[str, _ProfAnd, str | None] | None = None
-        for view in found:
+
+        def consider(candidate: int) -> bool:
+            nonlocal best_rank, best
+            if candidate == target:
+                return False
+            view = self._open.get(candidate)
+            if view is None:
+                return False
             label, disposition = self._label(view, controls, active, uncompute=False)
             if label is None:
-                continue
+                return False
             rank = _LABEL_RANK[label]
             if rank < best_rank:
                 best_rank = rank
                 best = (label, view, disposition)
+            return rank == 0
+
+        for candidate in self._by_sig.get(sig, ()):
+            if consider(candidate):
+                return best  # type: ignore[return-value]
+        if best_rank > 1:
+            for candidate in self._by_origin.get(controls, ()):
+                if consider(candidate):
+                    return best  # type: ignore[return-value]
         if best is None:
             return None, None, None
         return best
@@ -531,6 +537,11 @@ class StructureProfiler:
         control_values_ok = sig == view.sig
         target_ok = self.values.read(view.target) == view.and_val
         same_wires = view.origin == controls or view.controls == controls
+        if view.base_epoch and self.values.gave_up(view.base_epoch):
+            # The pending-write cap tripped. Do not call this restored.
+            if control_values_ok or same_wires:
+                return "control_mutated", "open"
+            return None, None
         if view.invalid == "condition_bit_written" and (control_values_ok or same_wires):
             return "condition_bit_written", self._mutation_disposition(view, control_values_ok, "condition_bit_written")
         if not control_values_ok:
@@ -594,25 +605,33 @@ class StructureProfiler:
         self._sync_zero(left)
         self._sync_zero(right)
         self.values.apply(op, firing)
-        self._relocate(left, right)
+        self._retarget_swap(left, right)
         self._swap_flags(left, right)
         self._stamp_mutation(op)
 
     def _stamp_mutation(self, op: Op) -> None:
+        written = _value_writes(op)
+        for qubit in written:
+            self._sync_stored(qubit)
         gate = mutation_gate(op.name)
-        if gate is None:
+        if gate is None or not written:
             return
         seen: set[int] = set()
-        for qubit in op.qubits:
-            for target in self._by_q.get(qubit, ()):
+        for qubit in written:
+            bucket = self._watch.get(qubit)
+            if not bucket:
+                continue
+            for target in list(bucket):
                 if target in seen:
                     continue
                 seen.add(target)
                 view = self._open.get(target)
-                if view is None or view.first_mutation is not None:
+                if view is None:
                     continue
-                if not self._pristine(view):
+                if view.first_mutation is None and not self._pristine(view):
                     view.first_mutation = gate
+                if view.first_mutation is not None:
+                    self._unwatch(view)
 
     def _pristine(self, view: _ProfAnd) -> bool:
         if view.order != view.origin_order:
@@ -644,38 +663,64 @@ class StructureProfiler:
         else:
             self._proven_dirty.discard(qubit)
 
-    def _relocate(self, left: int, right: int) -> None:
+    def _retarget_swap(self, left: int, right: int) -> None:
+        """Move an AND stored on one swapped qubit onto the other. O(1).
+
+        Control ids stay at the origin. ValueMap carries the control value,
+        and the later CCX is matched by that value. Relabelling every live
+        AND on these qubits is what made SWAP superlinear.
+        """
+
         if left == right:
             return
-        seen: set[int] = set()
-        views: list[_ProfAnd] = []
-        for qubit in (left, right):
-            for target in list(self._by_q.get(qubit, ())):
-                if target in seen:
-                    continue
-                seen.add(target)
-                view = self._open.get(target)
-                if view is not None:
-                    views.append(view)
-        for view in views:
-            self._unindex_and(view)
-        for view in views:
-            view.order = tuple(
-                right if qubit == left else left if qubit == right else qubit for qubit in view.order
-            )
-            view.controls = frozenset(view.order)
-            if view.target == left:
-                view.target = right
-            elif view.target == right:
-                view.target = left
-        for view in views:
-            self._index_and(view)
+        first = self._open.get(left)
+        second = self._open.get(right)
+        if first is not None and first.target != left:
+            first = None
+        if second is not None and second.target != right:
+            second = None
+        if first is None and second is None:
+            return
+        if first is not None:
+            self._unindex_and(first)
+        if second is not None:
+            self._unindex_and(second)
+        if first is not None:
+            first.target = right
+            self._index_and(first)
+        if second is not None:
+            second.target = left
+            self._index_and(second)
+
+    def _unwatch(self, view: _ProfAnd) -> None:
+        for qubit in view.origin:
+            self._discard_member(self._watch, qubit, view.target)
+
+    def _sync_stored(self, qubit: int) -> None:
+        view = self._open.get(qubit)
+        if view is None or view.target != qubit or not view.sig:
+            return
+        bucket = self._by_sig.get(view.sig)
+        if self.values.read(qubit) == view.and_val:
+            if bucket is None:
+                self._by_sig[view.sig] = {qubit}
+            else:
+                bucket.add(qubit)
+            return
+        if bucket is None:
+            return
+        bucket.discard(qubit)
+        if not bucket:
+            del self._by_sig[view.sig]
 
     def _index_and(self, view: _ProfAnd) -> None:
         self._open[view.target] = view
-        for qubit in set(view.controls) | {view.target}:
-            self._by_q.setdefault(qubit, set()).add(view.target)
-        self._by_sig.setdefault(view.sig, set()).add(view.target)
+        self._by_origin.setdefault(view.origin, set()).add(view.target)
+        if view.sig:
+            self._by_sig.setdefault(view.sig, set()).add(view.target)
+        if view.first_mutation is None:
+            for qubit in view.origin:
+                self._watch.setdefault(qubit, set()).add(view.target)
         for bit in view.required:
             self._by_bit.setdefault(bit, set()).add(view.target)
 
@@ -683,25 +728,21 @@ class StructureProfiler:
         current = self._open.get(view.target)
         if current is view:
             del self._open[view.target]
-        for qubit in set(view.controls) | {view.target} | set(view.origin):
-            bucket = self._by_q.get(qubit)
-            if bucket is None:
-                continue
-            bucket.discard(view.target)
-            if not bucket:
-                del self._by_q[qubit]
-        bucket = self._by_sig.get(view.sig)
-        if bucket is not None:
-            bucket.discard(view.target)
-            if not bucket:
-                del self._by_sig[view.sig]
+        self._discard_member(self._by_origin, view.origin, view.target)
+        if view.sig:
+            self._discard_member(self._by_sig, view.sig, view.target)
+        for qubit in view.origin:
+            self._discard_member(self._watch, qubit, view.target)
         for bit in view.required:
-            bucket = self._by_bit.get(bit)
-            if bucket is None:
-                continue
-            bucket.discard(view.target)
-            if not bucket:
-                del self._by_bit[bit]
+            self._discard_member(self._by_bit, bit, view.target)
+
+    def _discard_member(self, index: dict, key, target: int) -> None:
+        bucket = index.get(key)
+        if bucket is None:
+            return
+        bucket.discard(target)
+        if not bucket:
+            del index[key]
 
     def _taint(self, qubit: int) -> None:
         self._proven_zero.discard(qubit)

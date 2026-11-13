@@ -252,7 +252,7 @@ class PlaybookShapeTests(unittest.TestCase):
         )
         for step in steps:
             self.assertEqual(step["tool"]["kind"], "shell")
-            self.assertIn("python3 -m vqcc.pipeline", step["tool"]["cmds"][0])
+            self.assertIn("PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline", step["tool"]["cmds"][0])
         text = (ROOT / "playbooks" / "vqcc_pipeline.yaml").read_text()
         self.assertNotIn("leaderboard_score: 1", text)
         self.assertNotIn("\n      kind: python\n", text)

@@ -150,7 +150,13 @@ The same steps without the `noetl` binary, including a single task:
 python3 kaggle/vqcc_optimize.py --task invsqrt --seed 20261108
 ```
 
-`--time-budget-s` defaults to 14400 for one optimize step. `--memory-budget-bytes`
+The optimize phase defaults to 32400 s (9 hours) for all three tasks
+together (`--optimize-budget-s`, or `VQCC_OPTIMIZE_BUDGET_S`). The shares
+are invsqrt 4860 s, dqi 22680 s, and dfthcsos 4860 s. `--time-budget-s`
+(or `VQCC_TASK_BUDGET_S`) replaces one task's share. `--transform-budget-s`
+(or `VQCC_TRANSFORM_BUDGET_S`) defaults to 7200 s for each of `profile`,
+`restore`, `cancel`, and `reuse`. When that cap trips, the task keeps the
+unmodified circuit and later steps still run. `--memory-budget-bytes`
 defaults to 2147483648. `--window` defaults to 4096 (the cancellation horizon;
 Z-rotation merging is not limited by it). `--max-candidates` defaults
 to 1 and cannot be set above 3.
