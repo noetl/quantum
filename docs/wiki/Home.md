@@ -7,7 +7,10 @@ This wiki matches this tree: verifier JSON score parsing, the default local CLI 
 The spec contract is `specs/001-noetl-pipeline/spec.md` at main
 `0b3915b38fb2de7897b735995b7be33fde617c63`.
 Issues: [2](https://github.com/noetl/quantum/issues/2) through
-[9](https://github.com/noetl/quantum/issues/9).
+[9](https://github.com/noetl/quantum/issues/9), plus
+[17](https://github.com/noetl/quantum/issues/17) and
+[19](https://github.com/noetl/quantum/issues/19).
+The team briefing for this tree is the [tutorial](Tutorial).
 
 ## What runs today
 
@@ -72,6 +75,7 @@ adds Toffolis is not written.
 
 ## Pages
 
+- [Team tutorial](Tutorial)
 - [Architecture](Architecture)
 - [User Guide](User-Guide)
 - [Developer Guide](Developer-Guide)

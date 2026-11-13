@@ -9,6 +9,12 @@ competition data it blocks verification, writes no circuit, and records
 `leaderboard_score: null`. It does not contain the Kaggle dataset or a
 leaderboard score.
 
+The team briefing is [docs/tutorial/README.md](docs/tutorial/README.md)
+(wiki mirror: [docs/wiki/Tutorial.md](docs/wiki/Tutorial.md)). It walks the
+competition, the playbooks, the scoring rule, the Kaggle notebook procedure,
+and the open FR-006, FR-007, and FR-008 questions. Main for that briefing is
+`da8490e`, the merge of PR #20.
+
 The team hub is <https://dg-create.com/kaggle/quantum>. Bot activity is on
 <https://dg-create.com/tower/> (see [docs/tower.md](docs/tower.md) for what that
 page shows). The companion paper is
@@ -161,6 +167,8 @@ Planning lives in Spec Kit, initialized for Cursor:
 
 ```text
 docs/            brief, primers, glossary, experiment log, data fetch
+docs/tutorial/   team briefing, step by step
+docs/wiki/       versioned wiki, including the tutorial mirror
 tasks/           invsqrt, dqi, dfthcsos stubs
 playbooks/       NoETL pipeline
 scripts/         score, package, fetch, experiment log
