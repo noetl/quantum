@@ -21,12 +21,15 @@ API_VALIDATE_URL = "https://noetl.ai/api/dsl/validate"
 USER_AGENT = "noetl-quantum-dsl-client/1.0"
 
 # Inspected 2026-11-08 from GET /api/dsl/version and /dsl/source.json.
-# Live POST /api/dsl/validate schema_digest on 2026-11-11, server 3.156.2.
-# The previous pin (sha256:de6519f1…ab9ad6) was the 3.156.1 / 3.153.0 digest.
+# Live POST /api/dsl/validate schema_digest on 2026-11-13.
+# GET /api/dsl/version reported server 3.161.2. The validate body omitted
+# server_version. The previous pin (sha256:29b2831f…b1c4be) was the
+# 2026-11-11 digest on server 3.156.2. The pin before that
+# (sha256:de6519f1…ab9ad6) was the 3.156.1 / 3.153.0 digest.
 # GET /schema/v2/playbook.schema.json is unchanged; this digest is the
 # /api/dsl/schema document the validate response reports.
 EXPECTED_SCHEMA_DIGEST = (
-    "sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be"
+    "sha256:25071111774314cbf0c83ee9925b53701c2228232574bda3b13b1e27d58b372c"
 )
 SERVER_COMMIT = "5cf0712da626a28af9f73f833d48d7c6e5c13140"
 SERVER_VERSION = "3.153.0"
