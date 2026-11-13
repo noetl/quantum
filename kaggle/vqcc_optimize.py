@@ -26,9 +26,10 @@ What to check in the run JSON:
   ``retained_cost`` than ``baseline_cost``, and ``competition_verified`` true.
 - ``rejected`` or ``unchanged`` leaves that task's artifact path on the
   baseline file. A rejected proposal is not the retained path.
-- ``unchanged`` means the rewrite did not shorten the circuit or lower that
-  task's static cost weight, so the verifier was not asked to score one.
-  A shorter circuit is scored even when the removed gates are Cliffords.
+- ``unchanged`` means the rewrite did not lower the charged weight or the
+  qubit count, so the verifier was not asked to score one. A Clifford-only
+  shrink is not sent. ``structure`` on the optimize step is the circuit
+  profile (opcodes, lifetimes, repeated blocks). It is not a score.
 - The other tasks' sha256 values are unchanged when you passed ``--task``.
 - No file was written under the read-only dataset mount.
 """

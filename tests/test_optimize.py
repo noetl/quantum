@@ -452,7 +452,7 @@ class PeepholeTests(unittest.TestCase):
                     _assert_same_shots(self, kickmix, original, optimized, inputs=2, flag=True)
 
     def test_modules_do_not_import_kickmix(self) -> None:
-        for name in ("optimize.py", "kickmix_file.py"):
+        for name in ("optimize.py", "kickmix_file.py", "profile.py"):
             text = (ROOT / "vqcc" / name).read_text(encoding="utf-8")
             self.assertNotIn("import kickmix", text)
 

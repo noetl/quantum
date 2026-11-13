@@ -411,6 +411,8 @@ def optimize_task(
                 }
             )
             break
+        if rewrite.profile:
+            summary["structure"] = rewrite.profile
         if not rewrite.wrote:
             attempts.append(
                 {
@@ -420,6 +422,7 @@ def optimize_task(
                     "before": rewrite.before,
                     "after": rewrite.after,
                     "stats": rewrite.stats,
+                    "structure": rewrite.profile,
                 }
             )
             break
@@ -472,6 +475,7 @@ def optimize_task(
             "before": rewrite.before,
             "after": rewrite.after,
             "stats": rewrite.stats,
+            "structure": rewrite.profile,
             "leaderboard_score": None,
         }
         if not kept:

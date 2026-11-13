@@ -160,6 +160,9 @@ What to check in `runs/<id>/provenance.json`:
 - `leaderboard_score` is null and `package.zip_written` is false.
 - `optimization.status` is `accepted` only when `retained_cost` is strictly
   less than `baseline_cost` and that task's verifier JSON `status` is `PASS`.
+- `structure` on an optimize step is the circuit profile (opcodes,
+  lifetimes, repeated blocks). It is not a score. The field is present
+  even when no candidate is written. See [Circuit structure](Circuit-Structure).
 - `rejected` and `unchanged` leave `paths` on the previous artifact. A
   rejected file under `runs/<id>/proposals/` is not the retained path.
 - With `--task invsqrt`, the dqi and dfthcsos sha256 values are unchanged.

@@ -46,17 +46,34 @@ on the measurement bit. The replacement is applied only when the target
 is known to have been ``|0>`` before the compute (unnamed scratch when the
 file has registers, or a qubit just reset by ``R`` or ``HMR``). Named
 register qubits are not assumed to start at ``|0>``.
+
+Two further rewrites use that same ``|0>`` proof.
+
+- Shared-control factoring. While a clean AND is still stored on its
+  target, a later ``CCX`` with the same controls and a different target
+  is the same XOR. It is replaced by ``CX`` from the AND target. Kickmix
+  idioms usually copy with ``CX`` already; the rewrite fires only when a
+  second ``CCX`` is still present.
+- Qubit lifetime compaction. Scratch wires whose lifetimes are split by
+  an unconditional ``R`` or ``HMR`` can share a physical id that is known
+  ``|0>``. Named register ids are never renumbered and are never given
+  to scratch. The pass is off when the file has no quantum register,
+  because the system qubits cannot be told from scratch. A wire rename
+  is constant for one lifetime, so ``SWAP`` and ``CSWAP`` are renamed
+  like any other gate.
 """
 
 from __future__ import annotations
 
 import bisect
+import heapq
 import os
 import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
 
+from vqcc.profile import StructureProfiler
 from vqcc.kickmix_file import (
     ANGLE_MOD,
     Z_ANGLE,
@@ -67,6 +84,12 @@ from vqcc.kickmix_file import (
     OptimizeBudgetError,
     _format_kmx,
     _parse_kmb,
+    Q1_0,
+    Q2_0,
+    Q2_1,
+    Q3_0,
+    Q3_1,
+    Q3_2,
     detect_format,
     iter_kmb_ops,
     open_kmb,
@@ -101,6 +124,10 @@ class PassStats:
     empty_conditions: int = 0
     dropped_identity_rotations: int = 0
     and_uncomputes: int = 0
+    clean_and_opens: int = 0
+    shared_control_factors: int = 0
+    qubit_reuses: int = 0
+    qubit_relabels: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -110,6 +137,10 @@ class PassStats:
             "empty_conditions": self.empty_conditions,
             "dropped_identity_rotations": self.dropped_identity_rotations,
             "and_uncomputes": self.and_uncomputes,
+            "clean_and_opens": self.clean_and_opens,
+            "shared_control_factors": self.shared_control_factors,
+            "qubit_reuses": self.qubit_reuses,
+            "qubit_relabels": self.qubit_relabels,
         }
 
 
@@ -123,6 +154,7 @@ class RewriteResult:
     stats: dict = field(default_factory=dict)
     format: str | None = None
     task: str | None = None
+    profile: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -134,6 +166,7 @@ class RewriteResult:
             "stats": self.stats,
             "format": self.format,
             "task": self.task,
+            "structure": self.profile,
             "passes": list(_PASS_NAMES),
             "cost_model": _cost_model(self.task),
             "proxy_note": (
@@ -150,6 +183,8 @@ _PASS_NAMES = (
     "indexed_self_inverse_cancellation",
     "arithmetic_commutation",
     "measurement_and_uncompute",
+    "shared_control_toffoli_factor",
+    "qubit_lifetime_reuse",
     "deferred_z_rotation_merge",
     "store_overwrite",
     "empty_condition",
@@ -352,6 +387,9 @@ class _AndTracker:
             rewritten = self._try_uncompute(op)
             if rewritten is not None:
                 return rewritten
+            factored = self._try_factor(op)
+            if factored is not None:
+                return factored
             self._touch(op)
             if self._can_open(op):
                 self._open(op)
@@ -396,6 +434,7 @@ class _AndTracker:
             self.steps,
         )
         self.open[target] = rec
+        self.stats.clean_and_opens += 1
         self.proven_dirty.add(target)
         self.proven_zero.discard(target)
         for qubit in (control_a, control_b, target):
@@ -422,6 +461,49 @@ class _AndTracker:
         store = Op(name="BIT_STORE0", bits=(fresh,))
         fix = Op(name="CZ", qubits=order, condition=fresh)
         return [store, hmr, fix]
+
+    def _try_factor(self, op: Op) -> list[Op] | None:
+        """Replace a second CCX of a live clean AND with CX from that AND.
+
+        The open target still holds the control AND, so XORing it into the
+        new target is the same operation as another CCX. The open record
+        stays. The new target is marked dirty.
+        """
+
+        control_a, control_b, target = op.qubits
+        if control_a == control_b or target in (control_a, control_b):
+            return None
+        controls = frozenset((control_a, control_b))
+        left = self.by_q.get(control_a)
+        right = self.by_q.get(control_b)
+        if not left or not right:
+            return None
+        stack = tuple(self.stack)
+        chosen: _OpenAnd | None = None
+        for candidate in left:
+            if candidate == target or candidate not in right:
+                continue
+            record = self.open.get(candidate)
+            if record is None or record.controls != controls:
+                continue
+            if record.explicit != op.condition or record.stack != stack:
+                continue
+            chosen = record
+            break
+        if chosen is None:
+            return None
+        self.stats.shared_control_factors += 1
+        copied = Op(name="CX", qubits=(chosen.target, target), condition=op.condition)
+        return self._emit_instead(copied)
+
+    def _emit_instead(self, op: Op) -> list[Op]:
+        self._touch(op)
+        if op.name in {"R", "HMR"} and op.qubits:
+            self._mark_zero(op.qubits[0])
+        else:
+            for qubit in _value_writes(op):
+                self._kill_dirty(qubit)
+        return [op]
 
     def _touch(self, op: Op) -> None:
         seen: set[int] = set()
@@ -501,6 +583,14 @@ def peephole(
             for bit in _bits_of(op):
                 if bit + 1 > fresh_bit:
                     fresh_bit = bit + 1
+    used: set[int] = set()
+    highest = -1
+    for op in ops:
+        if op.qubits:
+            used.update(op.qubits)
+            highest = max(highest, max(op.qubits))
+    if named:
+        highest = max(highest, max(named))
     emitted: list[Op] = []
     _rewrite_ops(
         ops,
@@ -513,6 +603,8 @@ def peephole(
         named_qubits=named,
         has_registers=bool(named),
         fresh_bit=fresh_bit,
+        used_ids=used,
+        header_qubits=None if highest < 0 else highest + 1,
     )
     return emitted
 
@@ -605,6 +697,28 @@ def _qubit_width(max_id: int, named: set[int]) -> int:
     return max_id + 1
 
 
+def _start_profiler(
+    named: set[int],
+    has_registers: bool,
+    *,
+    header_qubits: int | None,
+    header_bits: int | None,
+) -> StructureProfiler:
+    if not has_registers:
+        blocked = "no_registers"
+    elif not named:
+        blocked = "no_named_qubits"
+    else:
+        blocked = None
+    return StructureProfiler(
+        named=named,
+        has_registers=has_registers,
+        header_qubits=header_qubits,
+        header_bits=header_bits,
+        reuse_blocked=blocked,
+    )
+
+
 def _register_scope(registers: list[bytes], num_bits: int) -> tuple[set[int], int]:
     named: set[int] = set()
     max_bit = num_bits - 1
@@ -616,8 +730,9 @@ def _register_scope(registers: list[bytes], num_bits: int) -> tuple[set[int], in
     return named, max_bit + 1
 
 
-def _scan_kmx_scope(src: str, memory_budget_bytes: int) -> tuple[set[int], int, bool]:
+def _scan_kmx_scope(src: str, memory_budget_bytes: int) -> tuple[set[int], int, bool, set[int]]:
     named: set[int] = set()
+    used: set[int] = set()
     max_bit = -1
     has_registers = False
     for op in read_kmx_ops(src, memory_budget_bytes):
@@ -625,10 +740,29 @@ def _scan_kmx_scope(src: str, memory_budget_bytes: int) -> tuple[set[int], int, 
             has_registers = True
         if op.name == "APPEND_TO_REGISTER" and op.qubits:
             named.add(op.qubits[0])
+        if op.qubits:
+            used.update(op.qubits)
         for bit in _bits_of(op):
             if bit > max_bit:
                 max_bit = bit
-    return named, max_bit + 1, has_registers
+    return named, max_bit + 1, has_registers, used
+
+
+def _used_qubit_ids(view) -> set[int]:
+    """Qubit ids named by a kmb operand column. This does not build Op objects."""
+
+    found: set[int] = set()
+    for key in (Q1_0, Q2_0, Q2_1, Q3_0, Q3_1, Q3_2):
+        column = view.columns.get(key)
+        if not column:
+            continue
+        buffer = memoryview(column)
+        try:
+            found.update(buffer.cast("I"))
+        except (TypeError, ValueError):
+            for offset in range(0, len(buffer) - 3, 4):
+                found.add(int.from_bytes(buffer[offset : offset + 4], "little"))
+    return found
 
 
 def _optimize_kmb(
@@ -665,6 +799,16 @@ def _optimize_kmb(
             writer.emit(op)
 
         named, fresh_bit = _register_scope(view.registers, view.num_bits)
+        used_ids = _used_qubit_ids(view) | named
+        header = view.num_qubits
+        if used_ids:
+            header = max(header, max(used_ids) + 1)
+        profiler = _start_profiler(
+            named,
+            bool(view.registers),
+            header_qubits=view.num_qubits,
+            header_bits=view.num_bits,
+        )
         _rewrite_ops(
             ops(),
             emit,
@@ -676,7 +820,11 @@ def _optimize_kmb(
             named_qubits=named,
             has_registers=bool(view.registers),
             fresh_bit=fresh_bit,
+            profiler=profiler,
+            used_ids=used_ids,
+            header_qubits=header,
         )
+        profile = profiler.finish()
         # Q is max qubit id + 1, including ids named by a register. A scratch
         # id that no longer appears is not padded back: the published costs
         # multiply by Q, and a named register still pins its own ids.
@@ -691,10 +839,10 @@ def _optimize_kmb(
         ):
             writer.abort()
             _unlink(partial)
-            return _refused(before, after, stats, "kmb", task, qubits_before, qubits_after)
+            return _refused(before, after, stats, "kmb", task, qubits_before, qubits_after, profile)
         writer.close()
         os.replace(partial, dst)
-        return _accepted(before, after, stats, dst, "kmb", task, qubits_before, qubits_after)
+        return _accepted(before, after, stats, dst, "kmb", task, qubits_before, qubits_after, profile)
     except Exception:
         if writer is not None:
             writer.abort()
@@ -724,7 +872,7 @@ def _optimize_kmx(
     after = GateCounts()
     source_span = _Span()
     emitted_span = _Span()
-    named, fresh_bit, has_registers = _scan_kmx_scope(src, memory_budget_bytes)
+    named, fresh_bit, has_registers, used_ids = _scan_kmx_scope(src, memory_budget_bytes)
     try:
         _check_deadline(deadline)
 
@@ -737,6 +885,7 @@ def _optimize_kmx(
             emitted_span.note(op)
             _emit_kmx(handle, op, after)
 
+        profiler = _start_profiler(named, has_registers, header_qubits=None, header_bits=None)
         with open(partial, "w", encoding="utf-8", newline="\n") as handle:
             _rewrite_ops(
                 ops(),
@@ -749,20 +898,25 @@ def _optimize_kmx(
                 named_qubits=named,
                 has_registers=has_registers,
                 fresh_bit=fresh_bit,
+                profiler=profiler,
+                used_ids=used_ids | named,
+                header_qubits=(max(used_ids | named) + 1) if (used_ids or named) else 0,
             )
         _check_deadline(deadline)
         qubits_before = _qubit_width(source_span.max_qubit, named)
         qubits_after = _qubit_width(emitted_span.max_qubit, named)
+        profiler.header_qubits = qubits_before
+        profile = profiler.finish()
         if not should_materialize(
             before, after, task, qubits_before=qubits_before, qubits_after=qubits_after
         ):
             _unlink(partial)
-            return _refused(before, after, stats, "kmx", task, qubits_before, qubits_after)
+            return _refused(before, after, stats, "kmx", task, qubits_before, qubits_after, profile)
         parent = os.path.dirname(dst)
         if parent:
             os.makedirs(parent, exist_ok=True)
         os.replace(partial, dst)
-        return _accepted(before, after, stats, dst, "kmx", task, qubits_before, qubits_after)
+        return _accepted(before, after, stats, dst, "kmx", task, qubits_before, qubits_after, profile)
     except Exception:
         _unlink(partial)
         raise
@@ -798,6 +952,9 @@ def _optimize_directory(
     wrote_any = False
     qubits_before = 0
     qubits_after = 0
+    sum_before = 0
+    sum_after = 0
+    profiles: list[dict] = []
     try:
         for dirpath, _dirnames, filenames in os.walk(src):
             for name in filenames:
@@ -823,6 +980,19 @@ def _optimize_directory(
                     file_after_q = file_before_q
                 qubits_before = max(qubits_before, file_before_q)
                 qubits_after = max(qubits_after, file_after_q)
+                sum_before += file_before_q
+                sum_after += file_after_q
+                if file_result.profile:
+                    profiles.append(
+                        {
+                            "path": relative,
+                            "wrote": file_result.wrote,
+                            "qubits": file_result.profile.get("qubits"),
+                            "toffoli": file_result.profile.get("toffoli"),
+                            "resets": file_result.profile.get("resets"),
+                            "registers": file_result.profile.get("registers"),
+                        }
+                    )
                 _add_dict(before, file_result.before)
                 if file_result.wrote:
                     wrote_any = True
@@ -832,22 +1002,66 @@ def _optimize_directory(
                     _copy_stream(source, target)
                     _add_dict(after, file_result.before or file_result.after)
                     _add_stats(stats, file_result.stats)
-        if not wrote_any or not should_materialize(
+        directory_profile = {
+            "directory": True,
+            "not_a_score": True,
+            "qubit_width_max_before": qubits_before,
+            "qubit_width_max_after": qubits_after,
+            "qubit_width_sum_before": sum_before,
+            "qubit_width_sum_after": sum_after,
+            "files": profiles,
+        }
+        if not wrote_any or not _directory_worth(
             before,
             after,
             task,
-            qubits_before=qubits_before,
-            qubits_after=qubits_after,
+            max_before=qubits_before,
+            max_after=qubits_after,
+            sum_before=sum_before,
+            sum_after=sum_after,
         ):
             _unlink_tree(partial)
             _prune_empty(os.path.dirname(partial))
-            return _refused(before, after, stats, "directory", task, qubits_before, qubits_after)
+            return _refused(
+                before, after, stats, "directory", task, qubits_before, qubits_after, directory_profile
+            )
         _unlink_tree(dst)
         os.replace(partial, dst)
-        return _accepted(before, after, stats, dst, "directory", task, qubits_before, qubits_after)
+        return _accepted(
+            before, after, stats, dst, "directory", task, qubits_before, qubits_after, directory_profile
+        )
     except Exception:
         _unlink_tree(partial)
         raise
+
+
+def _directory_worth(
+    before: GateCounts,
+    after: GateCounts,
+    task: str | None,
+    *,
+    max_before: int,
+    max_after: int,
+    sum_before: int,
+    sum_after: int,
+) -> bool:
+    """A dfthcsos directory is worth a verifier call when weight or width drops.
+
+    The official ``Q`` is not the per-file header (version 7 printed 730
+    while each angle file was width 119). A drop in the sum of file widths
+    is still sent, and a wider file is not. The verifier score decides
+    whether that candidate is kept.
+    """
+
+    if _cost_units(after, task) > _cost_units(before, task):
+        return False
+    if max_after > max_before or sum_after > sum_before:
+        return False
+    if _cost_units(after, task) < _cost_units(before, task):
+        return True
+    if max_after < max_before or sum_after < sum_before:
+        return True
+    return False
 
 
 def _refused(
@@ -858,6 +1072,7 @@ def _refused(
     task: str | None,
     qubits_before: int | None = None,
     qubits_after: int | None = None,
+    profile: dict | None = None,
 ) -> RewriteResult:
     if _cost_units(after, task) > _cost_units(before, task):
         reason = (
@@ -882,6 +1097,7 @@ def _refused(
         stats=stats.as_dict(),
         format=fmt,
         task=task,
+        profile=profile or {},
     )
 
 
@@ -894,6 +1110,7 @@ def _accepted(
     task: str | None,
     qubits_before: int | None = None,
     qubits_after: int | None = None,
+    profile: dict | None = None,
 ) -> RewriteResult:
     return RewriteResult(
         True,
@@ -904,6 +1121,7 @@ def _accepted(
         stats=stats.as_dict(),
         format=fmt,
         task=task,
+        profile=profile or {},
     )
 
 
@@ -1177,6 +1395,136 @@ class _Hold:
             self._index(index, op)
 
 
+class _LifetimeMap:
+    """Rename scratch wires onto ids that are known to be ``|0>``.
+
+    A lifetime is the stretch between unconditional resets. The physical
+    id is fixed for that stretch, which is why ``SWAP`` and ``CSWAP`` are
+    ordinary renamed gates. Named register ids stay on themselves and are
+    never placed in the free set.
+
+    An id is a hole only when the pre-scan did not see it and it is not a
+    named register. Ids that show up later in the circuit are not holes,
+    so a wire keeps its own id until a reset frees some other id. That is
+    what makes a dense circuit stay put, and what lets a high scratch id
+    fall into a real gap or onto a qubit that ``R`` / ``HMR`` has cleared.
+
+    The pass is disabled without a named quantum register. System qubits
+    and scratch cannot be separated from the op stream alone, and moving
+    a system id fails the verifier.
+    """
+
+    def __init__(
+        self,
+        named: set[int],
+        enabled: bool,
+        stats: PassStats,
+        *,
+        used: set[int] | None = None,
+        header: int | None = None,
+    ) -> None:
+        self.named = named
+        self.enabled = enabled
+        self.stats = stats
+        self.map: dict[int, int] = {}
+        self.occupied: set[int] = set()
+        self.recycled: list[int] = []
+        self.holes: list[int] = []
+        self.stack = 0
+        if enabled and header is not None and used is not None:
+            for qubit in range(header):
+                if qubit not in named and qubit not in used:
+                    self.holes.append(qubit)
+            heapq.heapify(self.holes)
+
+    def apply(self, op: Op) -> Op:
+        if not self.enabled:
+            return op
+        if op.name == "PUSH_CONDITION":
+            self.stack += 1
+            return op
+        if op.name == "POP_CONDITION":
+            if self.stack:
+                self.stack -= 1
+            return op
+        if not op.qubits:
+            return op
+        qubits = tuple(self._wire(qubit) for qubit in op.qubits)
+        mapped = Op(
+            name=op.name,
+            qubits=qubits,
+            bits=op.bits,
+            condition=op.condition,
+            angle=op.angle,
+            info=op.info,
+            quote=op.quote,
+            register=op.register,
+        )
+        if self._hard_reset(op):
+            self._free(op.qubits[0])
+        return mapped
+
+    def _hard_reset(self, op: Op) -> bool:
+        return (
+            op.name in {"R", "HMR"}
+            and bool(op.qubits)
+            and op.qubits[0] not in self.named
+            and op.condition is None
+            and self.stack == 0
+        )
+
+    def _wire(self, qubit: int) -> int:
+        if qubit in self.named:
+            return qubit
+        current = self.map.get(qubit)
+        if current is not None:
+            return current
+        physical, kind = self._alloc(qubit)
+        self.map[qubit] = physical
+        self.occupied.add(physical)
+        if kind == "recycled":
+            self.stats.qubit_reuses += 1
+        elif kind == "hole":
+            self.stats.qubit_relabels += 1
+        return physical
+
+    def _alloc(self, qubit: int) -> tuple[int, str]:
+        self._drop_stale(self.recycled)
+        self._drop_stale(self.holes)
+        recycled = self.recycled[0] if self.recycled else None
+        hole = self.holes[0] if self.holes else None
+        if recycled is not None and recycled < qubit and (hole is None or recycled <= hole):
+            return heapq.heappop(self.recycled), "recycled"
+        if hole is not None and hole < qubit:
+            return heapq.heappop(self.holes), "hole"
+        if qubit not in self.occupied and qubit not in self.named:
+            # A reset of this same wire pushed its id. Taking the id back
+            # has to remove that heap entry, or the next wire will be given
+            # an id that is already live.
+            if self.recycled and self.recycled[0] == qubit:
+                heapq.heappop(self.recycled)
+            return qubit, "same"
+        if self.recycled:
+            return heapq.heappop(self.recycled), "recycled"
+        if self.holes:
+            return heapq.heappop(self.holes), "hole"
+        cursor = 0
+        while cursor in self.named or cursor in self.occupied:
+            cursor += 1
+        return cursor, "fresh"
+
+    def _drop_stale(self, heap: list[int]) -> None:
+        while heap and heap[0] in self.occupied:
+            heapq.heappop(heap)
+
+    def _free(self, qubit: int) -> None:
+        physical = self.map.pop(qubit, None)
+        if physical is None:
+            return
+        self.occupied.discard(physical)
+        heapq.heappush(self.recycled, physical)
+
+
 def _rewrite_ops(
     ops,
     emit,
@@ -1189,28 +1537,43 @@ def _rewrite_ops(
     named_qubits: set[int] | None = None,
     has_registers: bool = False,
     fresh_bit: int = 0,
+    profiler: StructureProfiler | None = None,
+    used_ids: set[int] | None = None,
+    header_qubits: int | None = None,
 ) -> None:
+    named = set(named_qubits or ())
     hold = _Hold(window)
     pending = _Pending()
     tracker = _AndTracker(
-        named=set(named_qubits or ()),
+        named=named,
         has_registers=has_registers,
         fresh_bit=fresh_bit,
         window=window,
         stats=stats,
     )
+    reuse = _LifetimeMap(
+        named=named,
+        enabled=has_registers and bool(named),
+        stats=stats,
+        used=used_ids,
+        header=header_qubits,
+    )
+    if profiler is not None and named and has_registers:
+        profiler.note_register_qubits(named)
     seen = 0
 
     def push(op: Op) -> None:
         for produced in tracker.feed(op):
             hold.push(produced, stats)
             while hold.overflow():
-                emit(hold.pop_front())
+                emit(reuse.apply(hold.pop_front()))
 
     for op in ops:
         seen += 1
         if seen % 100_000 == 0:
             _check_deadline(deadline)
+        if profiler is not None:
+            profiler.note(op)
         before.add(op)
         reduced = normalize(op, stats)
         if reduced is None:
@@ -1224,7 +1587,7 @@ def _rewrite_ops(
     for flushed in pending.flush_all():
         push(flushed)
     for op in hold.drain():
-        emit(op)
+        emit(reuse.apply(op))
 
 
 def _cancels(earlier: Op, current: Op) -> bool:
@@ -1410,6 +1773,10 @@ def _add_stats(total: PassStats, part: dict) -> None:
     total.empty_conditions += int(part.get("empty_conditions") or 0)
     total.dropped_identity_rotations += int(part.get("dropped_identity_rotations") or 0)
     total.and_uncomputes += int(part.get("and_uncomputes") or 0)
+    total.clean_and_opens += int(part.get("clean_and_opens") or 0)
+    total.shared_control_factors += int(part.get("shared_control_factors") or 0)
+    total.qubit_reuses += int(part.get("qubit_reuses") or 0)
+    total.qubit_relabels += int(part.get("qubit_relabels") or 0)
 
 
 def _assert_separate(src: str, dst: str) -> None:

@@ -35,6 +35,12 @@ the packaging gate. It is not an optimizer.
    written when the charged weight or the qubit count drops. `tasks/*/generate.py`
    still refuses to write a circuit, because that path is "build a new
    circuit," not "rewrite a verified one."
+6. [Issue 19](https://github.com/noetl/quantum/issues/19). The optimize step
+   profiles the input and can factor a repeated clean AND or reuse a
+   scratch id after a verified reset. Version 8 left the official scores
+   at baseline. Whether the sample files have any of that structure is
+   what the next Kaggle run's `structure` field reports. See
+   [Circuit structure](Circuit-Structure).
 6. [Issue 3](https://github.com/noetl/quantum/issues/3). Competition-quality
    generators, as opposed to peephole rewrites of a baseline, are still not
    implemented.
