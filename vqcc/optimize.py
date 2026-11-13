@@ -82,8 +82,10 @@ import bisect
 import heapq
 import os
 import shutil
+import sys
 import tempfile
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from vqcc.profile import StructureProfiler, firing_bits
@@ -121,6 +123,34 @@ _METADATA = {"INFO_TAG", "DEBUG_PRINT", "REGISTER", "APPEND_TO_REGISTER"}
 _BARRIER = {"PUSH_CONDITION", "POP_CONDITION"}
 _NO_MERGE = object()
 _TASKS = ("invsqrt", "dqi", "dfthcsos")
+# Nine hours for the optimize phase, split across the three tasks. dqi is
+# the large circuit. Each streaming transform (profile, restore, cancel,
+# reuse) is also capped so one of them cannot run until the Kaggle 12-hour
+# kill. Shares: invsqrt 15%, dqi 70%, dfthcsos 15%.
+DEFAULT_OPTIMIZE_BUDGET_S = 9 * 60 * 60
+DEFAULT_TRANSFORM_BUDGET_S = 2 * 60 * 60
+TASK_BUDGET_SHARE = {"invsqrt": 0.15, "dqi": 0.70, "dfthcsos": 0.15}
+_PROGRESS_EVERY = 100_000
+
+
+def task_budget_seconds(task: str, overall_s: float) -> float:
+    """This task's share of the optimize-phase wall clock."""
+
+    share = TASK_BUDGET_SHARE.get(task)
+    if share is None:
+        raise OptimizeBudgetError(f"unknown task {task}")
+    if overall_s < 0:
+        raise OptimizeBudgetError("optimize budget must be non-negative")
+    return share * float(overall_s)
+
+
+def _progress(task: str | None, gates: int, elapsed: float) -> None:
+    print(
+        f"progress task={task or '-'} transforms=profile,restore,cancel,reuse "
+        f"gates={gates} elapsed_s={elapsed:.1f}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 # Integer stand-in for the published product. Toffoli = 4 so one T (T/4)
 # is 1 and the kickmix "~20 T ≈ 4 Toffoli" fine-rotation stand-in is 16.
@@ -349,6 +379,7 @@ class _OpenAnd:
         "ctrl_vals",
         "and_val",
         "sig",
+        "base_epoch",
     )
 
     def __init__(self, target: int, order: tuple[int, int], stack: tuple[int, ...], explicit: int | None, born: int) -> None:
@@ -367,6 +398,7 @@ class _OpenAnd:
         self.ctrl_vals: tuple = ()
         self.and_val = None
         self.sig: frozenset = frozenset()
+        self.base_epoch: dict[int, int] = {}
 
     def as_op(self) -> Op:
         return Op(name="CCX", qubits=(self.order[0], self.order[1], self.target), condition=self.explicit)
@@ -408,7 +440,12 @@ class _AndTracker:
         self.stats = stats
         self.stack: list[int] = []
         self.open: dict[int, _OpenAnd] = {}
-        self.by_q: dict[int, set[int]] = {}
+        # Young ANDs only. An AND leaves this index once it is blocked or
+        # older than the cancellation horizon, so a long-lived fanout is
+        # not scanned on later gates.
+        self.watch: dict[int, set[int]] = {}
+        self.by_origin: dict[frozenset, set[int]] = {}
+        self.young: deque[_OpenAnd] = deque()
         self.proven_zero: set[int] = set()
         self.proven_dirty: set[int] = set()
         self.steps = 0
@@ -485,6 +522,7 @@ class _AndTracker:
         rec.ctrl_vals = held
         rec.and_val = self.values.read(target)
         rec.sig = frozenset(held)
+        rec.base_epoch = {qubit: self.values.epoch(qubit) for qubit in rec.controls}
         self._link(rec)
         self.stats.clean_and_opens += 1
         self.proven_dirty.add(target)
@@ -505,7 +543,9 @@ class _AndTracker:
             self._mark_zero(target)
             self.stats.left_for_cancellation += 1
             return [op]
-        order = rec.order
+        # The matching CCX names the wires that currently hold the controls.
+        # Those are the CZ controls, including after a SWAP moved the value.
+        order = (op.qubits[0], op.qubits[1])
         self._mark_zero(target)
         self.stats.and_uncomputes += 1
         fresh = self.fresh_bit
@@ -676,6 +716,8 @@ class _AndTracker:
             return False
         if rec.target != op.qubits[2]:
             return False
+        if self.values.gave_up(rec.base_epoch):
+            return False
         sig = frozenset((self.values.read(op.qubits[0]), self.values.read(op.qubits[1])))
         if sig != rec.sig:
             return False
@@ -696,6 +738,8 @@ class _AndTracker:
                 continue
             record = self.open.get(candidate)
             if record is None or record.sig != sig:
+                continue
+            if self.values.gave_up(record.base_epoch):
                 continue
             if self.values.read(record.target) != record.and_val:
                 continue
@@ -726,10 +770,11 @@ class _AndTracker:
         decided later by ``ValueMap``, when the next CCX is matched.
         """
 
+        self._expire_young()
         seen: set[int] = set()
         targets: list[int] = []
         for qubit in op.qubits:
-            for target in self.by_q.get(qubit, ()):
+            for target in self.watch.get(qubit, ()):
                 if target not in seen:
                     seen.add(target)
                     targets.append(target)
@@ -743,6 +788,7 @@ class _AndTracker:
                 continue
             if not _commutes(rec.as_op(), op):
                 rec.blocked = True
+                self._unwatch(rec)
 
     def _mark_zero(self, qubit: int) -> None:
         self._drop(qubit)
@@ -761,24 +807,47 @@ class _AndTracker:
             return
         self._unlink(rec)
 
+    def _expire_young(self) -> None:
+        """Drop ANDs the cancellation horizon can no longer see.
+
+        ``blocked`` only chooses a rewrite over leaving the pair for the
+        horizon. Past the horizon the rewrite runs anyway, so the AND no
+        longer needs to be visited on every overlapping gate.
+        """
+
+        limit = self.steps - self.window
+        while self.young and self.young[0].born <= limit:
+            rec = self.young.popleft()
+            self._unwatch(rec)
+
     def _link(self, rec: _OpenAnd) -> None:
         self.open[rec.target] = rec
         for qubit in rec.controls | {rec.target}:
-            self.by_q.setdefault(qubit, set()).add(rec.target)
+            self.watch.setdefault(qubit, set()).add(rec.target)
+        self.by_origin.setdefault(rec.controls, set()).add(rec.target)
         if rec.sig:
             self.by_sig.setdefault(rec.sig, set()).add(rec.target)
+        self.young.append(rec)
+
+    def _unwatch(self, rec: _OpenAnd) -> None:
+        for qubit in rec.controls | {rec.target}:
+            bucket = self.watch.get(qubit)
+            if bucket is None:
+                continue
+            bucket.discard(rec.target)
+            if not bucket:
+                del self.watch[qubit]
 
     def _unlink(self, rec: _OpenAnd) -> None:
         current = self.open.get(rec.target)
         if current is rec:
             del self.open[rec.target]
-        for qubit in rec.controls | {rec.target}:
-            bucket = self.by_q.get(qubit)
-            if bucket is None:
-                continue
-            bucket.discard(rec.target)
-            if not bucket:
-                del self.by_q[qubit]
+        self._unwatch(rec)
+        origin = self.by_origin.get(rec.controls)
+        if origin is not None:
+            origin.discard(rec.target)
+            if not origin:
+                del self.by_origin[rec.controls]
         bucket = self.by_sig.get(rec.sig)
         if bucket is not None:
             bucket.discard(rec.target)
@@ -808,29 +877,68 @@ class _AndTracker:
             self.proven_dirty.discard(qubit)
 
     def _relocate(self, left: int, right: int) -> None:
+        """Rekey an AND stored on a swapped qubit. Control ids stay put.
+
+        The control value moves in ``ValueMap``. Matching reads that value
+        off the later CCX, so the records that merely use these qubits as
+        controls are not rewritten. Doing so on every SWAP was superlinear
+        in the number of live ANDs.
+        """
+
         if left == right:
             return
-        seen: set[int] = set()
-        records: list[_OpenAnd] = []
-        for qubit in (left, right):
-            for target in list(self.by_q.get(qubit, ())):
-                if target in seen:
-                    continue
-                seen.add(target)
-                rec = self.open.get(target)
-                if rec is not None:
-                    records.append(rec)
-        for rec in records:
-            self._unlink(rec)
-        for rec in records:
-            rec.order = tuple(right if qubit == left else left if qubit == right else qubit for qubit in rec.order)
-            rec.controls = frozenset(rec.order)
-            if rec.target == left:
-                rec.target = right
-            elif rec.target == right:
-                rec.target = left
-        for rec in records:
-            self._link(rec)
+        first = self.open.get(left)
+        second = self.open.get(right)
+        if first is not None and first.target != left:
+            first = None
+        if second is not None and second.target != right:
+            second = None
+        if first is None and second is None:
+            return
+        first_watched = first is not None and self._is_watched(first)
+        second_watched = second is not None and self._is_watched(second)
+        if first is not None:
+            self._detach_ids(first)
+            del self.open[left]
+        if second is not None:
+            self._detach_ids(second)
+            del self.open[right]
+        if first is not None:
+            first.target = right
+            self.open[right] = first
+            self._attach_ids(first, watch=first_watched)
+        if second is not None:
+            second.target = left
+            self.open[left] = second
+            self._attach_ids(second, watch=second_watched)
+
+    def _is_watched(self, rec: _OpenAnd) -> bool:
+        for qubit in rec.controls | {rec.target}:
+            bucket = self.watch.get(qubit)
+            if bucket and rec.target in bucket:
+                return True
+        return False
+
+    def _detach_ids(self, rec: _OpenAnd) -> None:
+        self._unwatch(rec)
+        origin = self.by_origin.get(rec.controls)
+        if origin is not None:
+            origin.discard(rec.target)
+            if not origin:
+                del self.by_origin[rec.controls]
+        bucket = self.by_sig.get(rec.sig)
+        if bucket is not None:
+            bucket.discard(rec.target)
+            if not bucket:
+                del self.by_sig[rec.sig]
+
+    def _attach_ids(self, rec: _OpenAnd, *, watch: bool) -> None:
+        if watch:
+            for qubit in rec.controls | {rec.target}:
+                self.watch.setdefault(qubit, set()).add(rec.target)
+        self.by_origin.setdefault(rec.controls, set()).add(rec.target)
+        if rec.sig:
+            self.by_sig.setdefault(rec.sig, set()).add(rec.target)
 
 
 def peephole(
@@ -888,6 +996,7 @@ def optimize_artifact(
     window: int = 32,
     memory_budget_bytes: int = 2 * 1024**3,
     deadline: float | None = None,
+    transform_budget_s: float | None = None,
     task: str | None = None,
 ) -> RewriteResult:
     """Write ``dst`` when the rewrite is a structural or cost reduction.
@@ -900,6 +1009,11 @@ def optimize_artifact(
     if window < 1 or window > 4096:
         raise OptimizeBudgetError("window must be from 1 to 4096")
     _check_task(task)
+    transform_deadline = None
+    if transform_budget_s is not None:
+        if transform_budget_s < 0:
+            raise OptimizeBudgetError("transform budget must be non-negative")
+        transform_deadline = time.monotonic() + float(transform_budget_s)
     _assert_separate(src, dst)
     if not os.path.exists(src):
         return RewriteResult(False, f"missing source {src}", {}, {}, task=task)
@@ -910,6 +1024,7 @@ def optimize_artifact(
             window=window,
             memory_budget_bytes=memory_budget_bytes,
             deadline=deadline,
+            transform_deadline=transform_deadline,
             task=task,
         )
     return _optimize_file(
@@ -918,6 +1033,7 @@ def optimize_artifact(
         window=window,
         memory_budget_bytes=memory_budget_bytes,
         deadline=deadline,
+        transform_deadline=transform_deadline,
         task=task,
     )
 
@@ -929,6 +1045,7 @@ def _optimize_file(
     window: int,
     memory_budget_bytes: int,
     deadline: float | None,
+    transform_deadline: float | None = None,
     task: str | None,
 ) -> RewriteResult:
     kind = detect_format(src)
@@ -939,6 +1056,7 @@ def _optimize_file(
             window=window,
             memory_budget_bytes=memory_budget_bytes,
             deadline=deadline,
+            transform_deadline=transform_deadline,
             task=task,
         )
     if kind == "kmx":
@@ -948,6 +1066,7 @@ def _optimize_file(
             window=window,
             memory_budget_bytes=memory_budget_bytes,
             deadline=deadline,
+            transform_deadline=transform_deadline,
             task=task,
         )
     return RewriteResult(
@@ -1044,6 +1163,7 @@ def _optimize_kmb(
     window: int,
     memory_budget_bytes: int,
     deadline: float | None,
+    transform_deadline: float | None = None,
     task: str | None,
 ) -> RewriteResult:
     mapped, handle = open_kmb(src, memory_budget_bytes)
@@ -1052,7 +1172,7 @@ def _optimize_kmb(
     stats = PassStats()
     before = GateCounts()
     try:
-        _check_deadline(deadline)
+        _check_deadline(deadline, transform_deadline)
         view = _parse_kmb(mapped)
         writer = KmbWriter(partial, view.registers)
         seen = 0
@@ -1063,7 +1183,7 @@ def _optimize_kmb(
             for op in iter_kmb_ops(view):
                 seen += 1
                 if seen % 100_000 == 0:
-                    _check_deadline(deadline)
+                    _check_deadline(deadline, transform_deadline)
                 yield op
 
         def emit(op: Op) -> None:
@@ -1088,6 +1208,7 @@ def _optimize_kmb(
             stats=stats,
             before=before,
             deadline=deadline,
+            transform_deadline=transform_deadline,
             task=task,
             named_qubits=named,
             has_registers=bool(view.registers),
@@ -1102,7 +1223,7 @@ def _optimize_kmb(
         # multiply by Q, and a named register still pins its own ids.
         if seen != view.num_ops:
             raise KickmixFormatError(f"read {seen} operations, header says {view.num_ops}")
-        _check_deadline(deadline)
+        _check_deadline(deadline, transform_deadline)
         after = writer.counts
         qubits_before = view.num_qubits
         qubits_after = _qubit_width(emitted_span.max_qubit, named)
@@ -1134,6 +1255,7 @@ def _optimize_kmx(
     window: int,
     memory_budget_bytes: int,
     deadline: float | None,
+    transform_deadline: float | None = None,
     task: str | None,
 ) -> RewriteResult:
     partial_handle = tempfile.NamedTemporaryFile(prefix="vqcc-kmx-", suffix=".kmx", delete=False)
@@ -1146,7 +1268,7 @@ def _optimize_kmx(
     emitted_span = _Span()
     named, fresh_bit, has_registers, used_ids = _scan_kmx_scope(src, memory_budget_bytes)
     try:
-        _check_deadline(deadline)
+        _check_deadline(deadline, transform_deadline)
 
         def ops():
             for op in read_kmx_ops(src, memory_budget_bytes):
@@ -1166,6 +1288,7 @@ def _optimize_kmx(
                 stats=stats,
                 before=before,
                 deadline=deadline,
+                transform_deadline=transform_deadline,
                 task=task,
                 named_qubits=named,
                 has_registers=has_registers,
@@ -1174,7 +1297,7 @@ def _optimize_kmx(
                 used_ids=used_ids | named,
                 header_qubits=(max(used_ids | named) + 1) if (used_ids or named) else 0,
             )
-        _check_deadline(deadline)
+        _check_deadline(deadline, transform_deadline)
         qubits_before = _qubit_width(source_span.max_qubit, named)
         qubits_after = _qubit_width(emitted_span.max_qubit, named)
         profiler.header_qubits = qubits_before
@@ -1207,6 +1330,7 @@ def _optimize_directory(
     window: int,
     memory_budget_bytes: int,
     deadline: float | None,
+    transform_deadline: float | None = None,
     task: str | None,
 ) -> RewriteResult:
     """Rewrite a dfthcsos-style directory. Non-circuits are copied byte for byte.
@@ -1230,7 +1354,7 @@ def _optimize_directory(
     try:
         for dirpath, _dirnames, filenames in os.walk(src):
             for name in filenames:
-                _check_deadline(deadline)
+                _check_deadline(deadline, transform_deadline)
                 source = os.path.join(dirpath, name)
                 relative = os.path.relpath(source, src)
                 target = os.path.join(partial, relative)
@@ -1244,6 +1368,7 @@ def _optimize_directory(
                     window=window,
                     memory_budget_bytes=memory_budget_bytes,
                     deadline=deadline,
+                    transform_deadline=transform_deadline,
                     task=task,
                 )
                 file_before_q = int((file_result.before or {}).get("qubits") or 0)
@@ -1805,6 +1930,7 @@ def _rewrite_ops(
     stats: PassStats,
     before: GateCounts,
     deadline,
+    transform_deadline=None,
     task: str | None,
     named_qubits: set[int] | None = None,
     has_registers: bool = False,
@@ -1833,6 +1959,8 @@ def _rewrite_ops(
     if profiler is not None and named and has_registers:
         profiler.note_register_qubits(named)
     seen = 0
+    started = time.monotonic()
+    _progress(task, 0, 0.0)
 
     def emit_ready(ready: Op) -> None:
         hold.push(ready, stats)
@@ -1845,8 +1973,9 @@ def _rewrite_ops(
 
     for op in ops:
         seen += 1
-        if seen % 100_000 == 0:
-            _check_deadline(deadline)
+        if seen % _PROGRESS_EVERY == 0:
+            _check_deadline(deadline, transform_deadline)
+            _progress(task, seen, time.monotonic() - started)
         if profiler is not None:
             profiler.note(op)
         before.add(op)
@@ -1865,6 +1994,9 @@ def _rewrite_ops(
         push(flushed)
     for op in hold.drain():
         emit(reuse.apply(op))
+    _check_deadline(deadline, transform_deadline)
+    if seen >= _PROGRESS_EVERY:
+        _progress(task, seen, time.monotonic() - started)
 
 
 def _cancels(earlier: Op, current: Op) -> bool:
@@ -2068,9 +2200,20 @@ def _assert_separate(src: str, dst: str) -> None:
         raise KickmixFormatError("refusing to write a candidate inside the source artifact")
 
 
-def _check_deadline(deadline: float | None) -> None:
-    if deadline is not None and time.monotonic() > deadline:
-        raise OptimizeBudgetError("time budget exhausted. No candidate was written.")
+def _check_deadline(
+    deadline: float | None,
+    transform_deadline: float | None = None,
+) -> None:
+    now = time.monotonic()
+    if transform_deadline is not None and now >= transform_deadline:
+        raise OptimizeBudgetError(
+            "transform time budget exhausted (profile, restore, cancel, reuse). "
+            "The unmodified circuit for this task was kept."
+        )
+    if deadline is not None and now >= deadline:
+        raise OptimizeBudgetError(
+            "time budget exhausted. The unmodified circuit for this task was kept."
+        )
 
 
 def _unlink(path: str) -> None:

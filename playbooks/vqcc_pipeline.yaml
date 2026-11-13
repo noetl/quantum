@@ -4,6 +4,8 @@
 # server 3.156.2, HTTP 200, valid true, execute_verdict accept, findings empty.
 # Revalidated 2026-11-13: same verdict. GET /api/dsl/version reported
 # server 3.161.2. The validate body omitted server_version.
+# Revalidated again the same day after PYTHONUNBUFFERED=1 python3 -u:
+# HTTP 200, valid true, execute_verdict accept, findings empty.
 # schema_digest sha256:25071111774314cbf0c83ee9925b53701c2228232574bda3b13b1e27d58b372c
 # (2026-11-11 digest was sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be;
 # 2026-11-10 digest was sha256:de6519f1f025dcb0e4743e321cff30e8ac4800d38acaaecf8249c00a13ab9ad6).
@@ -38,7 +40,7 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline prepare
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline prepare
           --mode "{{ workload.mode }}"
           --data-dir "{{ workload.data_dir }}"
           --runs-root "{{ workload.runs_root }}"
@@ -53,7 +55,7 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline check-data
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline check-data
           --runs-root "{{ workload.runs_root }}"
           --repo-root "{{ workload.repo_root }}"
     next:
@@ -65,7 +67,7 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline adapt
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline adapt
           --task invsqrt
           --runs-root "{{ workload.runs_root }}"
           --repo-root "{{ workload.repo_root }}"
@@ -78,7 +80,7 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline adapt
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline adapt
           --task dqi
           --runs-root "{{ workload.runs_root }}"
           --repo-root "{{ workload.repo_root }}"
@@ -91,7 +93,7 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline adapt
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline adapt
           --task dfthcsos
           --runs-root "{{ workload.runs_root }}"
           --repo-root "{{ workload.repo_root }}"
@@ -104,7 +106,7 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify-official
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline verify-official
           --task invsqrt
           --seed "{{ workload.seed }}"
           --runs-root "{{ workload.runs_root }}"
@@ -118,7 +120,7 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify-official
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline verify-official
           --task dqi
           --seed "{{ workload.seed }}"
           --runs-root "{{ workload.runs_root }}"
@@ -132,7 +134,7 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline verify-official
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline verify-official
           --task dfthcsos
           --seed "{{ workload.seed }}"
           --runs-root "{{ workload.runs_root }}"
@@ -149,7 +151,7 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline cost
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline cost
           --runs-root "{{ workload.runs_root }}"
           --repo-root "{{ workload.repo_root }}"
     next:
@@ -161,7 +163,7 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline package
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline package
           --runs-root "{{ workload.runs_root }}"
           --repo-root "{{ workload.repo_root }}"
     next:
@@ -173,6 +175,6 @@ workflow:
       kind: shell
       cmds:
         - >-
-          cd "{{ workload.repo_root }}" && python3 -m vqcc.pipeline record
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline record
           --runs-root "{{ workload.runs_root }}"
           --repo-root "{{ workload.repo_root }}"

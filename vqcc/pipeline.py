@@ -61,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     opt = sub.add_parser("optimize", parents=[common])
     opt.add_argument("--task", required=True)
     opt.add_argument("--time-budget-s", type=float, default=None)
+    opt.add_argument("--transform-budget-s", type=float, default=None)
+    opt.add_argument("--optimize-budget-s", type=float, default=None)
     opt.add_argument("--memory-budget-bytes", type=int, default=2 * 1024**3)
     opt.add_argument("--window", type=int, default=32)
     opt.add_argument("--max-candidates", type=int, default=1)
@@ -129,6 +131,8 @@ def _optimize(args: argparse.Namespace) -> dict:
         args.runs_root,
         args.task,
         time_budget_s=args.time_budget_s,
+        transform_budget_s=args.transform_budget_s,
+        optimize_budget_s=args.optimize_budget_s,
         memory_budget_bytes=args.memory_budget_bytes,
         window=args.window,
         max_candidates=args.max_candidates,
