@@ -88,8 +88,11 @@ A file is written when the charged weight drops or the qubit count drops
   The compute Toffoli stays. Issue
   [#17](https://github.com/noetl/quantum/issues/17).
 - Shared-control factoring: while a clean AND is still on its target, a
-  later `CCX` with the same controls and a different target becomes `CX`.
-  Issue [#19](https://github.com/noetl/quantum/issues/19).
+  later `CCX` of the same control values and a different target becomes
+  `CX`. A restored control (`X`·`X`, `CX`·`CX`, `CCX`·`CCX`, `CSWAP`·`CSWAP`,
+  `SWAP`·`SWAP`) and an unconditional `SWAP` that moves the control are
+  included. A reset, a measurement, or any unproven write is not. Issue
+  [#19](https://github.com/noetl/quantum/issues/19).
 - Scratch reuse: scratch ids move onto a real gap, or onto an id freed by an
   unconditional `R` or `HMR`, and only when a named register tells system ids
   from scratch.

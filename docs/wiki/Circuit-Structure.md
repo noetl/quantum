@@ -80,13 +80,18 @@ The step JSON field `structure` (and each attempt's `structure`) holds:
   candidates, adjacent same-control run length, cascade links, ripple-like
   links, and the heaviest control pairs
 - `toffoli.match`: for each profiled shared-control candidate and each
-  matching uncompute pair, one label. `eligible` is a strict match.
-  `control_mutated` and `condition_bit_written` mean the profile still
-  counted an AND after its bit stopped being that AND.
-  `condition_mismatch` is a live AND whose firing condition does not match
-  the later `CCX`. The four labels sum to the candidate count. The attempt
-  `stats` also carry `and_replays`, `left_for_cancellation`, and
-  `reject_condition_mismatch`
+  matching uncompute pair, one label. `eligible` is a strict match,
+  including a control the tracker restored or moved with `SWAP`.
+  `control_mutated` means a control write was still in effect.
+  `condition_bit_written` means the profile still counted an AND after a
+  condition bit was overwritten. `condition_mismatch` is a live AND whose
+  firing condition does not match the later `CCX`. The four labels sum to
+  the candidate count. `control_mutation` splits every control write by
+  opcode (`X`, `CX`, `CCX`, `SWAP`, `CSWAP`, `R`, `HMR`, `other`) and by
+  `undone`, `relabelled`, or `open`. The `open` counts sum to
+  `control_mutated`. `undone` and `relabelled` are not part of that total.
+  The attempt `stats` also carry `and_replays`, `left_for_cancellation`,
+  and `reject_condition_mismatch`
 - qubit lifetimes: header width, ids touched, unused ids below the header,
   peak live qubits if a qubit dies only on unconditional `R`/`HMR`, peak
   live if a matching clean-AND uncompute also kills the target, and
@@ -199,13 +204,55 @@ uncomputed. `stats.reject_condition_mismatch` counts a live AND the later
 of the candidate counts. `structure.toffoli.measurement_and_closes` counts
 open ANDs closed by `R` or `HMR`.
 
-No Toffoli construction for a mutated control is sound. A ripple-like link
-or an AND-cascade link is a shape count of adjacent `CCX`s. Kickmix
-`iadd` and `init_gf2_mul` already copy with `CX` and uncompute with
-`del_and`. This pass does not replace those blocks with a different adder.
+A ripple-like link or an AND-cascade link is a shape count of adjacent
+`CCX`s. Kickmix `iadd` and `init_gf2_mul` already copy with `CX` and
+uncompute with `del_and`. This pass does not replace those blocks with a
+different adder.
 
 Nothing here is a new official score. A candidate is written only when the
 static Toffoli weight or the qubit count drops, and it is kept only on
 verifier `PASS` and a strictly lower JSON `score` (user story 2, FR-001,
 FR-003, FR-004, FR-010, FR-011). dqi's version 9 score is the baseline
 until a later Kaggle run measures a candidate.
+
+## Restored controls and SWAP relabels
+
+Kaggle version 10 (notebook scriptVersionId 369071305, main `5e22448`)
+labelled every rejected match `control_mutated`: dqi 832 shared-control
+and 222 uncompute, invsqrt 11 shared-control. `condition_mismatch` and
+`condition_bit_written` were 0, and `and_replays`, `left_for_cancellation`,
+and `reject_condition_mismatch` were 0. Evidence is the comment on
+[issue 19](https://github.com/noetl/quantum/issues/19#issuecomment-6851563594).
+The dqi score stayed 24439466758900.453. That number is the version 10
+verifier result, not a measurement from this tree. The sample circuits are
+not in this environment, so this tree has no before/after Toffoli count
+for dqi.
+
+`control_mutation` now records the first opcode that took a control off
+the value it had when the AND was computed, and whether tracking had put
+that value back before the later `CCX`.
+
+- `open` is still changed. Those counts sum to `control_mutated`. The
+  transform does not rewrite them.
+- `undone` means the value is back on the original qubit. `X`·`X`,
+  `CX`·`CX` with the same `CX` control, `CCX`·`CCX`, `CSWAP`·`CSWAP`, and
+  `SWAP`·`SWAP` are the patterns the tracker cancels. A conditional pair
+  cancels only when the condition bits were not overwritten between the
+  two gates.
+- `relabelled` means an unconditional `SWAP` moved the control value onto
+  the qubits of the later `CCX`. The copy or the uncompute uses those
+  qubits. `SWAP` then a `CCX` on the old ids stays `open`.
+
+`R` and `HMR` write a constant or a measurement. They are never `undone`
+or `relabelled`. A single `X`, `CX`, `CCX`, `SWAP`, or `CSWAP` that is
+not paired off stays `open`.
+
+`undone` and `relabelled` matches are `eligible` when the firing condition
+also matches. An `X`·`X` on the AND target is the same kind of restoration
+for the stored bit; the controls were not written, so it does not appear
+in `control_mutation`. The transform replaces that later `CCX` with `CX`,
+or with `HMR` plus `CZ` on the controls' current qubits when the target is
+the same. Small circuits for each pattern were checked by enumerating every
+input and comparing the kickmix qubit vector and, where the circuit does
+not measure, the shot phase. That is not a dqi score. Retention is still
+verifier `PASS` and a strictly lower JSON `score`.

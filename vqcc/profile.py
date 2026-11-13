@@ -12,7 +12,9 @@ What it counts, in one pass:
 - opcode histogram
 - repeated 32-gate windows, as lossy heavy hitters of a qubit-relative hash
 - Toffoli shape: clean AND opens, matching uncompute pairs, shared-control
-  candidates, and why each of those candidates is or is not a strict match,
+  candidates, and why each of those candidates is or is not a strict match.
+  A control write is split by opcode and by whether tracking restored it
+  or a SWAP moved it.
   adjacent same-control runs, ripple-like shifts, AND cascades
 - qubit lifetimes. A qubit is live from its first use after a verified
   ``|0>`` until the next unconditional ``R`` or ``HMR``. A second peak also
@@ -42,6 +44,7 @@ from vqcc.kickmix_file import (
     register_ids,
     _parse_kmb,
 )
+from vqcc.qubit_values import ValueMap, empty_mutation_row, mutation_gate, zero
 
 _WINDOW = 32
 _PAIR_CAP = 4096
@@ -54,6 +57,7 @@ _MATCH_REASONS = (
     "condition_bit_written",
     "condition_mismatch",
 )
+_LABEL_RANK = {label: index for index, label in enumerate(_MATCH_REASONS)}
 
 
 def firing_bits(stack, explicit: int | None) -> frozenset[int]:
@@ -66,14 +70,40 @@ def firing_bits(stack, explicit: int | None) -> frozenset[int]:
 
 
 class _ProfAnd:
-    """Loose AND record. ``invalid`` is why the transform will not use it."""
+    """Loose AND record. ``invalid`` is why the transform will not use it.
 
-    __slots__ = ("controls", "required", "invalid")
+    ``origin_order`` is the control qubits at the compute. ``order`` is where
+    those values sit now. A SWAP moves ``order``. ``ctrl_vals`` and
+    ``and_val`` are the values that have to be present for a match.
+    ``first_mutation`` is the first opcode that took a control off that value.
+    """
+
+    __slots__ = (
+        "origin",
+        "origin_order",
+        "order",
+        "controls",
+        "required",
+        "invalid",
+        "ctrl_vals",
+        "and_val",
+        "sig",
+        "first_mutation",
+        "target",
+    )
 
     def __init__(self, controls: frozenset[int], required: frozenset[int]) -> None:
+        self.origin = controls
+        self.origin_order: tuple[int, ...] = tuple(controls)
+        self.order: tuple[int, ...] = tuple(controls)
         self.controls = controls
         self.required = required
         self.invalid: str | None = None
+        self.ctrl_vals: tuple = ()
+        self.and_val = zero()
+        self.sig: frozenset = frozenset()
+        self.first_mutation: str | None = None
+        self.target = -1
 
 _NAME_CODE = {
     "NEG": 1,
@@ -147,6 +177,12 @@ class StructureProfiler:
         self.measurement_and_closes = 0
         self._shared_match = {reason: 0 for reason in _MATCH_REASONS}
         self._uncompute_match = {reason: 0 for reason in _MATCH_REASONS}
+        self._mutation = {
+            "shared_control": empty_mutation_row(),
+            "uncompute": empty_mutation_row(),
+        }
+        self._by_sig: dict[frozenset, set[int]] = {}
+        self.values = ValueMap()
         self._proven_dirty: set[int] = set()
         self._prev_ccx: tuple[int, ...] | None = None
         self.max_id = -1
@@ -183,7 +219,7 @@ class StructureProfiler:
             if self._cond:
                 self._cond.pop()
             return
-        self._invalidate_writes(op)
+        self._invalidate_condition_bits(op)
         hard_reset = (
             op.name in {"R", "HMR"}
             and bool(op.qubits)
@@ -203,11 +239,14 @@ class StructureProfiler:
         for qubit in op.qubits:
             self._touch_seen(qubit)
             self._born(qubit)
+        firing = firing_bits(self._cond, op.condition)
         if hard_reset:
             qubit = op.qubits[0]
             if qubit not in self._reset_qubits and not self.truncated:
                 self._reset_qubits.add(qubit)
                 self.qubits_reset += 1
+            self.values.apply(op, firing)
+            self._stamp_mutation(op)
             self._mark_zero(qubit)
             self._drop(qubit)
             self._die_reset(qubit)
@@ -215,8 +254,26 @@ class StructureProfiler:
         if op.name == "CCX" and len(op.qubits) == 3:
             self._note_ccx(op)
             return
+        if op.name == "SWAP" and len(op.qubits) == 2:
+            self._track_swap(op, firing)
+            return
+        if op.name == "CSWAP" and len(op.qubits) == 3:
+            self.values.apply(op, firing)
+            self._stamp_mutation(op)
+            for qubit in op.qubits[1:]:
+                self._taint(qubit)
+            return
+        self.values.apply(op, firing)
+        self._stamp_mutation(op)
+        if op.name in {"R", "HMR"} and op.qubits:
+            # Conditional reset. The value map has already made this opaque.
+            # Drop an AND stored on this qubit. A control that is only
+            # conditionally reset stays on its record so a later CCX is
+            # still labelled.
+            self._kill(op.qubits[0])
+            return
         for qubit in _value_writes(op):
-            self._kill(qubit)
+            self._taint(qubit)
 
     def finish(self) -> dict:
         if self._buf:
@@ -263,12 +320,28 @@ class StructureProfiler:
                 "match": {
                     "shared_control": dict(self._shared_match),
                     "uncompute": dict(self._uncompute_match),
+                    "control_mutation": {
+                        "shared_control": self._mutation["shared_control"],
+                        "uncompute": self._mutation["uncompute"],
+                        "note": (
+                            "Candidates whose controls were written after the AND. "
+                            "open is still changed at the later CCX and sums to "
+                            "control_mutated. undone means tracking put the original "
+                            "value back on the original qubit (X·X, CX·CX, CCX·CCX, "
+                            "CSWAP·CSWAP, SWAP·SWAP). relabelled means an unconditional "
+                            "SWAP moved that value onto the later CCX's controls. "
+                            "undone and relabelled are not part of control_mutated. "
+                            "A reset or a measurement is never undone. Not a score."
+                        ),
+                    },
                     "note": (
                         "One label per profiled candidate. The four labels sum "
                         "to that candidate count. eligible is a strict match the "
-                        "transform can apply. control_mutated and "
-                        "condition_bit_written mean the profile still counted an "
-                        "AND after its bit stopped being the AND. "
+                        "transform can apply, including a control that tracking "
+                        "restored or moved with SWAP. control_mutated means a "
+                        "control write was still in effect; the opcode split is "
+                        "control_mutation. condition_bit_written means the profile "
+                        "still counted an AND after a condition bit was overwritten. "
                         "condition_mismatch is a live AND whose firing condition "
                         "does not match the later CCX. Not a score."
                     ),
@@ -333,78 +406,306 @@ class StructureProfiler:
     def _match_open(self, op: Op, controls: frozenset[int], target: int) -> None:
         active = firing_bits(self._cond, op.condition)
         view = self._open.get(target)
-        if view is not None and view.controls == controls and len(controls) == 2 and target not in controls:
-            if view.invalid is not None:
-                reason = view.invalid
-            elif view.required == active:
-                reason = "eligible"
-            else:
-                reason = "condition_mismatch"
-            self._uncompute_match[reason] += 1
-            self.matching_uncompute_pairs += 1
-            self._drop(target)
-            self._mark_zero(target)
-            self._die_uncompute(target)
-            return
-        reason = self._shared_reason(op, controls, target, active)
-        if reason is not None:
+        if (
+            view is not None
+            and len(view.controls) == 2
+            and target not in view.controls
+            and target not in controls
+        ):
+            label, disposition = self._label(view, controls, active, uncompute=True)
+            if label is not None:
+                self._uncompute_match[label] += 1
+                self.matching_uncompute_pairs += 1
+                self._note_mutation("uncompute", view, disposition)
+                self._finish_uncompute(op, view, label, active)
+                return
+        reason, winner, disposition = self._shared_choice(op, controls, target, active)
+        if reason is not None and winner is not None:
             self._shared_match[reason] += 1
             self.shared_control_candidates += 1
-        if self._is_zero(target) and len(controls) == 2 and target not in controls:
-            if len(self._open) < 100_000:
-                self.clean_and_opens += 1
-                required = firing_bits(self._cond, op.condition)
-                self._open[target] = _ProfAnd(controls, required)
-                self._proven_dirty.add(target)
-                self._proven_zero.discard(target)
-                for qubit in list(controls) + [target]:
-                    self._by_q.setdefault(qubit, set()).add(target)
-                for bit in required:
-                    self._by_bit.setdefault(bit, set()).add(target)
-                if len(self._open) > self._peak_open:
-                    self._peak_open = len(self._open)
+            self._note_mutation("shared_control", winner, disposition)
+        opening = self._is_zero(target) and len(controls) == 2 and target not in controls
+        if opening:
+            self.values.force_zero(target)
+        held = (self.values.read(op.qubits[0]), self.values.read(op.qubits[1]))
+        self.values.apply(op, active)
+        self._stamp_mutation(op)
+        if opening and len(self._open) < 100_000:
+            self._record_open(op, controls, active, held)
             return
         self._kill(target)
 
-    def _shared_reason(
+    def _finish_uncompute(self, op: Op, view: _ProfAnd, label: str, active: frozenset[int]) -> None:
+        target = view.target
+        if label == "control_mutated":
+            self.values.apply(op, active)
+            self._stamp_mutation(op)
+            self._drop(target)
+            self._taint(target)
+            return
+        # The controls' current values match, so this CCX clears the AND.
+        # Stamp first so any other AND that used this ancilla as a control
+        # records the write.
+        self.values.force_zero(target)
+        self._stamp_mutation(op)
+        self._drop(target)
+        self._mark_zero(target)
+        self._die_uncompute(target)
+
+    def _record_open(
+        self,
+        op: Op,
+        controls: frozenset[int],
+        required: frozenset[int],
+        held: tuple,
+    ) -> None:
+        target = op.qubits[2]
+        view = _ProfAnd(controls, required)
+        view.origin_order = (op.qubits[0], op.qubits[1])
+        view.order = view.origin_order
+        view.target = target
+        view.ctrl_vals = held
+        view.and_val = self.values.read(target)
+        view.sig = frozenset(held)
+        self._open[target] = view
+        self.clean_and_opens += 1
+        self._proven_dirty.add(target)
+        self._proven_zero.discard(target)
+        self._index_and(view)
+        if len(self._open) > self._peak_open:
+            self._peak_open = len(self._open)
+
+    def _shared_choice(
         self,
         op: Op,
         controls: frozenset[int],
         target: int,
         active: frozenset[int],
-    ) -> str | None:
-        reason = None
-        left = self._by_q.get(op.qubits[0], ())
-        right = self._by_q.get(op.qubits[1], ())
-        for candidate in left:
-            if candidate == target or candidate not in right:
+    ) -> tuple[str | None, _ProfAnd | None, str | None]:
+        sig = frozenset((self.values.read(op.qubits[0]), self.values.read(op.qubits[1])))
+        seen: set[int] = set()
+        found: list[_ProfAnd] = []
+        for candidate in self._by_sig.get(sig, ()):
+            if candidate == target or candidate in seen:
                 continue
             view = self._open.get(candidate)
-            if view is None or view.controls != controls:
+            if view is None:
                 continue
-            if view.invalid is None and view.required <= active:
-                return "eligible"
-            if reason is None:
-                reason = view.invalid or "condition_mismatch"
-        return reason
-
-    def _invalidate_writes(self, op: Op) -> None:
-        bits = _bit_writes(op)
-        if bits:
-            touched: list[int] = []
-            for bit in bits:
-                touched.extend(self._by_bit.get(bit, ()))
-            for target in touched:
-                view = self._open.get(target)
-                if view is not None and view.invalid is None and bits & view.required:
-                    view.invalid = "condition_bit_written"
-        for qubit in _value_writes(op):
-            for target in list(self._by_q.get(qubit, ())):
-                view = self._open.get(target)
-                if view is None or view.invalid is not None:
+            seen.add(candidate)
+            found.append(view)
+        for qubit in op.qubits[:2]:
+            for candidate in self._by_q.get(qubit, ()):
+                if candidate == target or candidate in seen:
                     continue
-                if qubit in view.controls:
-                    view.invalid = "control_mutated"
+                view = self._open.get(candidate)
+                if view is None:
+                    continue
+                if view.origin != controls and view.controls != controls:
+                    continue
+                seen.add(candidate)
+                found.append(view)
+        best_rank = 9
+        best: tuple[str, _ProfAnd, str | None] | None = None
+        for view in found:
+            label, disposition = self._label(view, controls, active, uncompute=False)
+            if label is None:
+                continue
+            rank = _LABEL_RANK[label]
+            if rank < best_rank:
+                best_rank = rank
+                best = (label, view, disposition)
+        if best is None:
+            return None, None, None
+        return best
+
+    def _label(
+        self,
+        view: _ProfAnd,
+        controls: frozenset[int],
+        active: frozenset[int],
+        *,
+        uncompute: bool,
+    ) -> tuple[str | None, str | None]:
+        # ``controls`` is the later CCX's control-qubit set.
+        sig = frozenset(self.values.read(qubit) for qubit in controls)
+        control_values_ok = sig == view.sig
+        target_ok = self.values.read(view.target) == view.and_val
+        same_wires = view.origin == controls or view.controls == controls
+        if view.invalid == "condition_bit_written" and (control_values_ok or same_wires):
+            return "condition_bit_written", self._mutation_disposition(view, control_values_ok, "condition_bit_written")
+        if not control_values_ok:
+            if same_wires:
+                return "control_mutated", "open"
+            return None, None
+        if not target_ok:
+            # The control wires match and the stored bit does not. That is a
+            # write of the AND target, which drops the candidate instead of
+            # counting as a control mutation.
+            return None, None
+        if uncompute:
+            condition_ok = view.required == active
+        else:
+            condition_ok = view.required <= active
+        label = "eligible" if condition_ok else "condition_mismatch"
+        return label, self._mutation_disposition(view, True, label)
+
+    def _mutation_disposition(self, view: _ProfAnd, control_values_ok: bool, label: str) -> str | None:
+        if view.first_mutation is None:
+            return None
+        if label == "control_mutated":
+            return "open"
+        if not control_values_ok:
+            return None
+        if view.first_mutation in {"R", "HMR"}:
+            # A reset or a measurement does not put the old value back.
+            return None
+        if self._pristine(view):
+            return "undone"
+        return "relabelled"
+
+    def _note_mutation(self, kind: str, view: _ProfAnd, disposition: str | None) -> None:
+        if disposition is None:
+            return
+        gate = view.first_mutation or "other"
+        if gate not in self._mutation[kind]:
+            gate = "other"
+        self._mutation[kind][gate][disposition] += 1
+
+    def _invalidate_condition_bits(self, op: Op) -> None:
+        bits = _bit_writes(op)
+        if not bits:
+            return
+        touched: list[int] = []
+        for bit in bits:
+            touched.extend(self._by_bit.get(bit, ()))
+        for target in touched:
+            view = self._open.get(target)
+            if view is not None and view.invalid is None and bits & view.required:
+                view.invalid = "condition_bit_written"
+
+    def _track_swap(self, op: Op, firing: frozenset[int]) -> None:
+        left, right = op.qubits
+        if firing:
+            self.values.apply(op, firing)
+            self._stamp_mutation(op)
+            self._taint(left)
+            self._taint(right)
+            return
+        self._sync_zero(left)
+        self._sync_zero(right)
+        self.values.apply(op, firing)
+        self._relocate(left, right)
+        self._swap_flags(left, right)
+        self._stamp_mutation(op)
+
+    def _stamp_mutation(self, op: Op) -> None:
+        gate = mutation_gate(op.name)
+        if gate is None:
+            return
+        seen: set[int] = set()
+        for qubit in op.qubits:
+            for target in self._by_q.get(qubit, ()):
+                if target in seen:
+                    continue
+                seen.add(target)
+                view = self._open.get(target)
+                if view is None or view.first_mutation is not None:
+                    continue
+                if not self._pristine(view):
+                    view.first_mutation = gate
+
+    def _pristine(self, view: _ProfAnd) -> bool:
+        if view.order != view.origin_order:
+            return False
+        for qubit, expected in zip(view.origin_order, view.ctrl_vals):
+            if self.values.read(qubit) != expected:
+                return False
+        return True
+
+    def _sync_zero(self, qubit: int) -> None:
+        if qubit in self._proven_zero:
+            self.values.force_zero(qubit)
+
+    def _swap_flags(self, left: int, right: int) -> None:
+        left_zero = left in self._proven_zero
+        right_zero = right in self._proven_zero
+        left_dirty = left in self._proven_dirty
+        right_dirty = right in self._proven_dirty
+        self._set_flag(left, right_zero, right_dirty)
+        self._set_flag(right, left_zero, left_dirty)
+
+    def _set_flag(self, qubit: int, is_zero: bool, dirty: bool) -> None:
+        if is_zero:
+            self._proven_zero.add(qubit)
+        else:
+            self._proven_zero.discard(qubit)
+        if dirty:
+            self._proven_dirty.add(qubit)
+        else:
+            self._proven_dirty.discard(qubit)
+
+    def _relocate(self, left: int, right: int) -> None:
+        if left == right:
+            return
+        seen: set[int] = set()
+        views: list[_ProfAnd] = []
+        for qubit in (left, right):
+            for target in list(self._by_q.get(qubit, ())):
+                if target in seen:
+                    continue
+                seen.add(target)
+                view = self._open.get(target)
+                if view is not None:
+                    views.append(view)
+        for view in views:
+            self._unindex_and(view)
+        for view in views:
+            view.order = tuple(
+                right if qubit == left else left if qubit == right else qubit for qubit in view.order
+            )
+            view.controls = frozenset(view.order)
+            if view.target == left:
+                view.target = right
+            elif view.target == right:
+                view.target = left
+        for view in views:
+            self._index_and(view)
+
+    def _index_and(self, view: _ProfAnd) -> None:
+        self._open[view.target] = view
+        for qubit in set(view.controls) | {view.target}:
+            self._by_q.setdefault(qubit, set()).add(view.target)
+        self._by_sig.setdefault(view.sig, set()).add(view.target)
+        for bit in view.required:
+            self._by_bit.setdefault(bit, set()).add(view.target)
+
+    def _unindex_and(self, view: _ProfAnd) -> None:
+        current = self._open.get(view.target)
+        if current is view:
+            del self._open[view.target]
+        for qubit in set(view.controls) | {view.target} | set(view.origin):
+            bucket = self._by_q.get(qubit)
+            if bucket is None:
+                continue
+            bucket.discard(view.target)
+            if not bucket:
+                del self._by_q[qubit]
+        bucket = self._by_sig.get(view.sig)
+        if bucket is not None:
+            bucket.discard(view.target)
+            if not bucket:
+                del self._by_sig[view.sig]
+        for bit in view.required:
+            bucket = self._by_bit.get(bit)
+            if bucket is None:
+                continue
+            bucket.discard(view.target)
+            if not bucket:
+                del self._by_bit[bit]
+
+    def _taint(self, qubit: int) -> None:
+        self._proven_zero.discard(qubit)
+        self._proven_dirty.add(qubit)
 
     def _is_zero(self, qubit: int) -> bool:
         if qubit in self._open or qubit in self._proven_dirty:
@@ -423,23 +724,12 @@ class StructureProfiler:
         self._proven_dirty.add(qubit)
 
     def _drop(self, target: int) -> None:
-        view = self._open.pop(target, None)
+        view = self._open.get(target)
         if view is None:
+            # The target qubit may have moved. Drop whatever record still
+            # names this id, and also a record whose key is stale.
             return
-        for qubit in view.controls | {target}:
-            bucket = self._by_q.get(qubit)
-            if bucket is None:
-                continue
-            bucket.discard(target)
-            if not bucket:
-                del self._by_q[qubit]
-        for bit in view.required:
-            bucket = self._by_bit.get(bit)
-            if bucket is None:
-                continue
-            bucket.discard(target)
-            if not bucket:
-                del self._by_bit[bit]
+        self._unindex_and(view)
 
     def _touch_seen(self, qubit: int) -> None:
         if qubit > self.max_id:
