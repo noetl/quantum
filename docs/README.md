@@ -2,7 +2,8 @@
 
 | Document | What it holds |
 | --- | --- |
-| [wiki/](wiki/Home.md) | Versioned copy of the GitHub wiki: setup, architecture, traceability, roadmap |
+| [tutorial/](tutorial/README.md) | Team briefing: competition, environment, data, playbooks, scoring, Kaggle runs, history, deliverables, open FR questions |
+| [wiki/](wiki/Home.md) | Versioned copy of the GitHub wiki: setup, architecture, traceability, roadmap, and the [tutorial mirror](wiki/Tutorial.md) |
 | [brief.md](brief.md) | Tasks, costs, scoring, submission layout, rules, timeline, and what was cross-checked |
 | [strategy.md](strategy.md) | Strategy ideas from the team hub, still untried |
 | [primers.md](primers.md) | Primers and the first-principles chain from the hub |
