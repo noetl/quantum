@@ -141,13 +141,17 @@ write, because the published costs do not charge the same gates.
   is part of the match: the uncompute has to sit under the same condition
   stack, and the replacement stays inside that stack.
 - Shared-control factoring. While that clean AND is still on its target, a
-  later `CCX` with the same controls and a different target is replaced by
-  `CX` from the AND target. The compute `CCX` stays. A phase on the AND
-  target does not block the copy. A bit flip of the target or of a control
-  drops the record, and the second `CCX` is left alone. The later `CCX` may
-  sit under a narrower condition than the one that computed the AND. The
-  `CX` keeps that narrower condition. A same-target pair whose firing
-  conditions differ is not an uncompute.
+  later `CCX` of the same control values and a different target is replaced
+  by `CX` from the qubit that holds the AND. The compute `CCX` stays. A
+  phase on the AND target does not block the copy. Tracking accepts a
+  control that is written and then restored to the same value (`X`·`X`,
+  `CX`·`CX` while the `CX` control is unchanged, `CCX`·`CCX`,
+  `CSWAP`·`CSWAP`, `SWAP`·`SWAP`) and an unconditional `SWAP` that moves
+  the control onto the later `CCX`. A reset, a measurement, or any write
+  the tracker cannot prove undone still leaves the second `CCX` alone.
+  The later `CCX` may sit under a narrower condition than the one that
+  computed the AND. The `CX` keeps that narrower condition. A same-target
+  pair whose firing conditions differ is not an uncompute.
 - Measurement replay. Kickmix `del_and` (`HMR` plus `CZ` on the two
   controls) can be delayed while the controls stay put. A later `CCX` of
   those controls onto a different target becomes `CX` from the qubit that

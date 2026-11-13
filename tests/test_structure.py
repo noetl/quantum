@@ -67,8 +67,11 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(toffoli["shared_control_candidates"], 1)
         self.assertEqual(toffoli["match"]["shared_control"]["control_mutated"], 1)
         self.assertEqual(toffoli["match"]["shared_control"]["eligible"], 0)
+        self.assertEqual(toffoli["match"]["control_mutation"]["shared_control"]["X"]["open"], 1)
         self.assertEqual(toffoli["matching_uncompute_pairs"], 1)
         self.assertEqual(toffoli["match"]["uncompute"]["control_mutated"], 1)
+        self.assertEqual(toffoli["match"]["control_mutation"]["uncompute"]["X"]["open"], 1)
+        _assert_mutation_totals(self, toffoli)
         stats = PassStats()
         peephole(ops, 32, stats)
         self.assertEqual(stats.shared_control_factors, 0)
@@ -398,6 +401,207 @@ class RewriteSimulationTests(unittest.TestCase):
                         optimized = kickmix.Circuit.from_file(str(dst))
                         self.assertLessEqual(optimized.num_qubits, original.num_qubits)
                         _assert_same_wires(self, kickmix, original, optimized, inputs=inputs)
+
+
+class RestoredControlTests(unittest.TestCase):
+    """Controls restored by tracking, or moved by SWAP, are real matches.
+
+    Each accepted circuit is checked on every input assignment. The qubit
+    vector and the shot phase are the exact simulator state. Patterns that
+    must stay rejected keep their Toffoli count and the same state.
+    """
+
+    def test_profile_splits_restored_and_open_mutations(self) -> None:
+        restored = [
+            Op(name="R", qubits=(2,)),
+            Op(name="CCX", qubits=(0, 1, 2)),
+            Op(name="X", qubits=(0,)),
+            Op(name="X", qubits=(0,)),
+            Op(name="CCX", qubits=(0, 1, 3)),
+        ]
+        report = profile_ops(restored, has_registers=False, header_qubits=4)
+        shared = report["toffoli"]["match"]["shared_control"]
+        self.assertEqual(shared["eligible"], 1)
+        self.assertEqual(shared["control_mutated"], 0)
+        self.assertEqual(report["toffoli"]["match"]["control_mutation"]["shared_control"]["X"]["undone"], 1)
+        moved = [
+            Op(name="R", qubits=(2,)),
+            Op(name="CCX", qubits=(0, 1, 2)),
+            Op(name="SWAP", qubits=(0, 3)),
+            Op(name="CCX", qubits=(3, 1, 4)),
+        ]
+        moved_report = profile_ops(moved, has_registers=False, header_qubits=5)
+        mutation = moved_report["toffoli"]["match"]["control_mutation"]["shared_control"]
+        self.assertEqual(moved_report["toffoli"]["match"]["shared_control"]["eligible"], 1)
+        self.assertEqual(mutation["SWAP"]["relabelled"], 1)
+        self.assertEqual(mutation["SWAP"]["open"], 0)
+        stale = [
+            Op(name="R", qubits=(2,)),
+            Op(name="CCX", qubits=(0, 1, 2)),
+            Op(name="SWAP", qubits=(0, 3)),
+            Op(name="CCX", qubits=(0, 1, 4)),
+        ]
+        stale_report = profile_ops(stale, has_registers=False, header_qubits=5)
+        stale_match = stale_report["toffoli"]["match"]
+        self.assertEqual(stale_match["shared_control"]["control_mutated"], 1)
+        self.assertEqual(stale_match["control_mutation"]["shared_control"]["SWAP"]["open"], 1)
+        reset = [
+            Op(name="R", qubits=(2,)),
+            Op(name="CCX", qubits=(0, 1, 2)),
+            Op(name="R", qubits=(0,)),
+            Op(name="CCX", qubits=(0, 1, 3)),
+        ]
+        reset_report = profile_ops(reset, has_registers=False, header_qubits=4)
+        self.assertEqual(reset_report["toffoli"]["match"]["shared_control"]["control_mutated"], 1)
+        self.assertEqual(reset_report["toffoli"]["match"]["control_mutation"]["shared_control"]["R"]["open"], 1)
+        self.assertEqual(reset_report["toffoli"]["match"]["control_mutation"]["shared_control"]["R"]["undone"], 0)
+        measured = [
+            Op(name="R", qubits=(2,)),
+            Op(name="CCX", qubits=(0, 1, 2)),
+            Op(name="HMR", qubits=(0,), bits=(0,)),
+            Op(name="CCX", qubits=(0, 1, 3)),
+        ]
+        measured_report = profile_ops(measured, has_registers=False, header_qubits=4)
+        self.assertEqual(measured_report["toffoli"]["match"]["control_mutation"]["shared_control"]["HMR"]["open"], 1)
+        for item in (report, moved_report, stale_report, reset_report, measured_report):
+            _assert_mutation_totals(self, item["toffoli"])
+
+    def test_restored_and_relabelled_patterns_match_exactly(self) -> None:
+        kickmix = _kickmix()
+        named = _named_prefix(2)
+        three = _named_prefix(3)
+        four = _named_prefix(4)
+        accepted = [
+            ("x-x-factor", named + "CCX q0 q1 q2\nX q0\nX q0\nCCX q0 q1 q3\n", 2, 0, "shared_control_factors"),
+            ("x-x-uncompute", named + "CCX q0 q1 q2\nX q0\nX q0\nCCX q0 q1 q2\n", 2, 0, "and_uncomputes"),
+            ("cx-cx", three + "CCX q0 q1 q3\nCX q2 q0\nCX q2 q0\nCCX q0 q1 q4\n", 3, 0, "shared_control_factors"),
+            (
+                "cx-control-restored",
+                three + "CCX q0 q1 q3\nCX q2 q0\nX q2\nX q2\nCX q2 q0\nCCX q0 q1 q4\n",
+                3,
+                0,
+                "shared_control_factors",
+            ),
+            ("swap-swap", three + "CCX q0 q1 q3\nSWAP q0 q2\nSWAP q0 q2\nCCX q0 q1 q4\n", 3, 0, "shared_control_factors"),
+            ("swap-relabel", three + "CCX q0 q1 q3\nSWAP q0 q2\nCCX q2 q1 q4\n", 3, 0, "shared_control_factors"),
+            ("swap-uncompute", three + "CCX q0 q1 q3\nSWAP q0 q2\nCCX q2 q1 q3\n", 3, 0, "and_uncomputes"),
+            (
+                "ccx-ccx",
+                four + "CCX q0 q1 q4\nCCX q2 q3 q0\nCCX q2 q3 q0\nCCX q0 q1 q5\n",
+                4,
+                0,
+                "shared_control_factors",
+            ),
+            (
+                "cswap-cswap",
+                four + "CCX q0 q1 q4\nCSWAP q2 q0 q3\nCSWAP q2 q0 q3\nCCX q0 q1 q5\n",
+                4,
+                0,
+                "shared_control_factors",
+            ),
+            ("conditional-x-x", named + "CCX q0 q1 q2\nX q0 if b0\nX q0 if b0\nCCX q0 q1 q3\n", 2, 1, "shared_control_factors"),
+            ("target-x-x", named + "CCX q0 q1 q2\nX q2\nX q2\nCCX q0 q1 q3\n", 2, 0, "shared_control_factors"),
+        ]
+        for label, text, inputs, bits, stat in accepted:
+            with self.subTest(label=label):
+                original, optimized, result = _optimize_text(kickmix, text)
+                self.assertTrue(result.wrote, result.reason)
+                self.assertGreaterEqual(result.stats[stat], 1)
+                self.assertLess(result.after["toffoli_like"], result.before["toffoli_like"])
+                phase = stat != "and_uncomputes"
+                _assert_permutation(self, kickmix, original, optimized, inputs, bits, phase=phase)
+
+    def test_open_mutations_are_not_rewritten(self) -> None:
+        kickmix = _kickmix()
+        named = _named_prefix(2)
+        three = _named_prefix(3)
+        four = _named_prefix(4)
+        rejected = [
+            ("single-x", named + "CCX q0 q1 q2\nX q0\nCCX q0 q1 q3\n", 2, 0),
+            ("cx-control-changed", three + "CCX q0 q1 q3\nCX q2 q0\nX q2\nCX q2 q0\nCCX q0 q1 q4\n", 3, 0),
+            ("swap-then-old-ids", three + "CCX q0 q1 q3\nSWAP q0 q2\nCCX q0 q1 q4\n", 3, 0),
+            ("single-cswap", four + "CCX q0 q1 q4\nCSWAP q2 q0 q3\nCCX q0 q1 q5\n", 4, 0),
+            ("conditional-x-once", named + "CCX q0 q1 q2\nX q0 if b0\nCCX q0 q1 q3\n", 2, 1),
+            ("reset-control", named + "CCX q0 q1 q2\nR q0\nCCX q0 q1 q3\n", 2, 0),
+            ("measure-control", named + "CCX q0 q1 q2\nHMR q0 b1\nCCX q0 q1 q3\n", 2, 0),
+            ("single-target-x", named + "CCX q0 q1 q2\nX q2\nCCX q0 q1 q3\n", 2, 0),
+        ]
+        for label, text, inputs, bits in rejected:
+            with self.subTest(label=label):
+                original, optimized, result = _optimize_text(kickmix, text)
+                self.assertEqual(result.stats["shared_control_factors"], 0)
+                self.assertEqual(result.stats["and_uncomputes"], 0)
+                self.assertEqual(result.stats["and_replays"], 0)
+                self.assertEqual(result.after["toffoli_like"], result.before["toffoli_like"])
+                # R and HMR reseed a phase kick per simulator call. The qubit
+                # permutation is the exact check for those two circuits.
+                _assert_permutation(
+                    self,
+                    kickmix,
+                    original,
+                    optimized,
+                    inputs,
+                    bits,
+                    phase=label not in {"measure-control", "reset-control"},
+                )
+
+
+def _named_prefix(count: int) -> str:
+    lines = [f"APPEND_TO_REGISTER q{index} r0" for index in range(count)]
+    lines.append('REGISTER r0 "x"')
+    return "\n".join(lines) + "\n"
+
+
+def _assert_mutation_totals(test: unittest.TestCase, toffoli: dict) -> None:
+    match = toffoli["match"]
+    expected = {
+        "shared_control": toffoli["shared_control_candidates"],
+        "uncompute": toffoli["matching_uncompute_pairs"],
+    }
+    for kind, count in expected.items():
+        test.assertEqual(sum(match[kind].values()), count)
+        opened = sum(row["open"] for row in match["control_mutation"][kind].values())
+        test.assertEqual(opened, match[kind]["control_mutated"])
+
+
+def _assert_permutation(test, kickmix, original, optimized, inputs: int, bits: int, phase: bool) -> None:
+    """Exact computational image of every input.
+
+    ``inputs`` named qubits and ``bits`` classical bits are enumerated.
+    Unnamed scratch stays at the simulator's |0>, which is the clean-AND
+    assumption. When ``phase`` is set, the shot phase is compared too.
+    Measurement uncompute reseeds that kick from the file bytes, so those
+    circuits compare the qubit permutation only.
+    """
+
+    for mask in range(1 << inputs):
+        for bit in range(1 << bits):
+            values = [(mask >> index) & 1 for index in range(inputs)]
+            left = _permutation_row(kickmix, original, values, bit)
+            right = _permutation_row(kickmix, optimized, values, bit)
+            width = min(len(left[0]), len(right[0]))
+            test.assertEqual(left[0][:width], right[0][:width], (values, bit))
+            test.assertFalse(any(left[0][width:]), (values, bit, left[0]))
+            test.assertFalse(any(right[0][width:]), (values, bit, right[0]))
+            if phase:
+                test.assertEqual(left[2], right[2], (values, bit))
+
+
+def _permutation_row(kickmix, circuit, values: list[int], bit: int):
+    sim = kickmix.Simulator(batch_size=1)
+    for index, value in enumerate(values):
+        if index < circuit.num_qubits:
+            sim.write_within_shot(kickmix.q(index), 0, bool(value))
+    if circuit.num_bits:
+        sim.write_within_shot(kickmix.b(0), 0, bool(bit))
+    sim.do(circuit)
+    qubits = tuple(
+        int(sim.read_within_shot(kickmix.q(index), 0, out=int)) for index in range(circuit.num_qubits)
+    )
+    classical = tuple(
+        int(sim.read_within_shot(kickmix.b(index), 0, out=int)) for index in range(circuit.num_bits)
+    )
+    return qubits, classical, str(sim.read_shot_phase(0))
 
 
 def _optimize_text(kickmix, text: str):

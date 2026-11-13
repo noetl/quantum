@@ -61,10 +61,13 @@ still decides. No score from a later pass is claimed here.
    lowers a score. Do not fill a score in
    [the history](Tutorial-06-History) until that run exists.
 2. Read `structure.toffoli.match` before treating a candidate count as
-   work the transform can do. `control_mutated` and
-   `condition_bit_written` are not rewrites.
+   work the transform can do. `control_mutation.*.open` is a control write
+   that was still in effect, and `condition_bit_written` is not a rewrite.
+   `undone` and `relabelled` are eligible when the condition matches.
    `stats.and_replays` and `stats.shared_control_factors` are the
-   applications. Version 9's application counts were 0.
+   applications. Version 10's application counts were 0; that run is the
+   comment on
+   [issue #19](https://github.com/noetl/quantum/issues/19#issuecomment-6851563594).
 3. Spend the next code change on something the cost formula charges:
    Toffoli count, T count, the invsqrt fine-rotation term, or `Q`. Issue
    [#19](https://github.com/noetl/quantum/issues/19) still lists cheaper
