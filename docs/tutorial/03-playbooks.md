@@ -60,14 +60,30 @@ Defaults on the optimize playbook, from the workload block:
 
 | Key | Value | Meaning |
 | --- | --- | --- |
-| `optimize_budget_s` | 32400 | Wall clock for every optimize step together (9 hours). Stays under Kaggle's 12-hour kill. Not a target runtime. `VQCC_OPTIMIZE_BUDGET_S` overrides it. |
+| `optimize_budget_s` | 25200 | Wall clock for every optimize step together (7 hours). Stays under Kaggle's 12-hour kill. Not a target runtime. `VQCC_OPTIMIZE_BUDGET_S` overrides the playbook value. |
 | `transform_budget_s` | 7200 | Cap for each streaming transform (`profile`, `restore`, `cancel`, `reuse`). On expiry that task keeps the unmodified circuit. `VQCC_TRANSFORM_BUDGET_S` overrides it. |
-| `invsqrt_budget_s` | 4860 | invsqrt's share of `optimize_budget_s` (15%). |
-| `dqi_budget_s` | 22680 | dqi's share (70%). dqi is the large circuit. |
-| `dfthcsos_budget_s` | 4860 | dfthcsos's share (15%). The three shares sum to 32400. `VQCC_TASK_BUDGET_S` overrides one task's share. |
+| `invsqrt_budget_s` | 3780 | invsqrt's share of `optimize_budget_s` (15%). |
+| `dqi_budget_s` | 17640 | dqi's share (70%). dqi is the large circuit. |
+| `dfthcsos_budget_s` | 3780 | dfthcsos's share (15%). The three shares sum to 25200. `VQCC_TASK_BUDGET_S` overrides one task's share. |
 | `memory_budget_bytes` | 2147483648 | Files above 2 GiB are left untouched. dqi's sample is about 886 MB and is mapped, not loaded as a circuit. |
 | `window` | 4096 | Cancellation horizon. The search walks gates that share a qubit or a bit. Z-rotation merging ignores this horizon. |
 | `max_candidates` | 1 | At most one candidate per task. The code refuses a value above 3. |
+
+The three task shares are taken from one absolute deadline
+(`optimize_clock.deadline_epoch` in `state.json`), recorded when the first
+optimize step starts. A later task only receives the time still left. The
+streaming transform runs in a child process. At the deadline the parent
+sends SIGTERM and, after 60 s, SIGKILL. Status `timeout` keeps the previous
+artifact. Cost, package, and record still run. The shell step also wraps
+the process in `timeout --signal=TERM --kill-after=60` so a stuck supervisor
+is killed and `mark-timeout` records the same status.
+
+Each task appends a flushed progress line to
+`runs/<run_id>/optimize/<task>.log` and to `runs/optimize-progress.log` at
+every phase boundary and at least every 60 s. noetl 5.3.2 local runtime
+shows a shell step's stdout only when that step exits, so the notebook tails
+the shared file. The partial profile is saved atomically to
+`runs/<run_id>/optimize/<task>.profile.json` on the same cadence.
 
 The notebook entrypoint that calls the same steps without requiring the
 `noetl` binary is `kaggle/vqcc_optimize.py`. It does not submit.

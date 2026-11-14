@@ -44,6 +44,7 @@ from vqcc.kickmix_file import (
     register_ids,
     _parse_kmb,
 )
+from vqcc.deadline import check as check_deadline
 from vqcc.qubit_values import ValueMap, empty_mutation_row, mutation_gate, zero
 
 _WINDOW = 32
@@ -203,12 +204,25 @@ class StructureProfiler:
         self.truncated = False
         self._peak_open = 0
 
+    def match_counts(self) -> dict[str, int]:
+        """Running candidate split. Not a score."""
+
+        eligible = self._shared_match["eligible"] + self._uncompute_match["eligible"]
+        mutated = self._shared_match["control_mutated"] + self._uncompute_match["control_mutated"]
+        return {
+            "candidates": self.shared_control_candidates + self.matching_uncompute_pairs,
+            "eligible": eligible,
+            "control_mutated": mutated,
+        }
+
     def note_register_qubits(self, qubits: set[int]) -> None:
         for qubit in qubits:
             self._born(qubit)
 
     def note(self, op: Op) -> None:
         self.instructions += 1
+        if self.instructions % 4096 == 0:
+            check_deadline()
         self.opcodes[op.name] = self.opcodes.get(op.name, 0) + 1
         self._buf.append(op)
         if len(self._buf) == _WINDOW:
@@ -513,11 +527,15 @@ class StructureProfiler:
                 best = (label, view, disposition)
             return rank == 0
 
-        for candidate in self._by_sig.get(sig, ()):
+        for index, candidate in enumerate(self._by_sig.get(sig, ())):
+            if index and index % 256 == 0:
+                check_deadline()
             if consider(candidate):
                 return best  # type: ignore[return-value]
         if best_rank > 1:
-            for candidate in self._by_origin.get(controls, ()):
+            for index, candidate in enumerate(self._by_origin.get(controls, ())):
+                if index and index % 256 == 0:
+                    check_deadline()
                 if consider(candidate):
                     return best  # type: ignore[return-value]
         if best is None:
@@ -621,7 +639,9 @@ class StructureProfiler:
             bucket = self._watch.get(qubit)
             if not bucket:
                 continue
-            for target in list(bucket):
+            for index, target in enumerate(list(bucket)):
+                if index and index % 256 == 0:
+                    check_deadline()
                 if target in seen:
                     continue
                 seen.add(target)

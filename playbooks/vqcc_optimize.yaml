@@ -6,7 +6,11 @@
 # findings empty. GET /api/dsl/version reported server 3.161.2.
 # Revalidated again the same day after the optimize wall-clock keys:
 # HTTP 200, valid true, execute_verdict accept, findings empty.
-# schema digest unchanged.
+# Revalidated 2026-11-14 after the hard deadline and 7-hour budget:
+# POST https://noetl.ai/api/dsl/validate
+# HTTP 200, valid true, execute_verdict accept, findings empty.
+# GET /api/dsl/version reported server 3.161.2. The validate body omitted
+# server_version. schema digest unchanged.
 # schema_digest sha256:25071111774314cbf0c83ee9925b53701c2228232574bda3b13b1e27d58b372c
 # The 2026-11-11 digest was
 # sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be.
@@ -37,17 +41,19 @@ workload:
   runs_root: runs
   repo_root: "."
   seed: "20261108"
-  # Wall clock for every optimize step together. Nine hours stays under
-  # Kaggle's 12-hour kill. Not a target runtime.
-  optimize_budget_s: "32400"
+  # Wall clock for every optimize step together. Seven hours stays under
+  # Kaggle's 12-hour kill, including verifier time and the 60 s kill grace.
+  # Not a target runtime. VQCC_OPTIMIZE_BUDGET_S overrides it.
+  optimize_budget_s: "25200"
   # Each streaming transform (profile, restore, cancel, reuse). When one
   # exceeds this, that task keeps the unmodified circuit.
+  # VQCC_TRANSFORM_BUDGET_S overrides it.
   transform_budget_s: "7200"
   # Per-task shares of optimize_budget_s. dqi is the large circuit.
-  # 4860 + 22680 + 4860 = 32400.
-  invsqrt_budget_s: "4860"
-  dqi_budget_s: "22680"
-  dfthcsos_budget_s: "4860"
+  # 3780 + 17640 + 3780 = 25200. VQCC_TASK_BUDGET_S overrides one task.
+  invsqrt_budget_s: "3780"
+  dqi_budget_s: "17640"
+  dfthcsos_budget_s: "3780"
   # dqi's sample circuit is about 886 MB. The rewriter maps the file; it does
   # not build a kickmix.Circuit. Files above this size are left untouched.
   memory_budget_bytes: "2147483648"
@@ -174,17 +180,33 @@ workflow:
     tool:
       kind: shell
       cmds:
-        - >-
-          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline optimize
-          --task invsqrt
-          --time-budget-s "{{ workload.invsqrt_budget_s }}"
-          --transform-budget-s "{{ workload.transform_budget_s }}"
-          --optimize-budget-s "{{ workload.optimize_budget_s }}"
-          --memory-budget-bytes "{{ workload.memory_budget_bytes }}"
-          --window "{{ workload.window }}"
-          --max-candidates "{{ workload.max_candidates }}"
-          --runs-root "{{ workload.runs_root }}"
-          --repo-root "{{ workload.repo_root }}"
+        - |
+          cd "{{ workload.repo_root }}" || exit 2
+          task_cap="${VQCC_TASK_BUDGET_S:-{{ workload.invsqrt_budget_s }}}"
+          overall_cap="${VQCC_OPTIMIZE_BUDGET_S:-{{ workload.optimize_budget_s }}}"
+          grace="$(python3 -c 'import sys; t=float(sys.argv[1]); o=float(sys.argv[2]); print(max(1, int(min(t, o) + 90)))' "$task_cap" "$overall_cap")"
+          set +e
+          timeout --signal=TERM --kill-after="${VQCC_KILL_AFTER_S:-60}" "$grace" \
+            env PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline optimize \
+            --task invsqrt \
+            --time-budget-s "{{ workload.invsqrt_budget_s }}" \
+            --transform-budget-s "{{ workload.transform_budget_s }}" \
+            --optimize-budget-s "{{ workload.optimize_budget_s }}" \
+            --memory-budget-bytes "{{ workload.memory_budget_bytes }}" \
+            --window "{{ workload.window }}" \
+            --max-candidates "{{ workload.max_candidates }}" \
+            --runs-root "{{ workload.runs_root }}" \
+            --repo-root "{{ workload.repo_root }}"
+          ec=$?
+          set -e
+          if [ "$ec" -eq 124 ] || [ "$ec" -eq 137 ]; then
+            PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline mark-timeout \
+              --task invsqrt \
+              --runs-root "{{ workload.runs_root }}" \
+              --repo-root "{{ workload.repo_root }}"
+          elif [ "$ec" -ne 0 ]; then
+            exit "$ec"
+          fi
     next:
       - step: optimize_dqi
 
@@ -196,17 +218,33 @@ workflow:
     tool:
       kind: shell
       cmds:
-        - >-
-          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline optimize
-          --task dqi
-          --time-budget-s "{{ workload.dqi_budget_s }}"
-          --transform-budget-s "{{ workload.transform_budget_s }}"
-          --optimize-budget-s "{{ workload.optimize_budget_s }}"
-          --memory-budget-bytes "{{ workload.memory_budget_bytes }}"
-          --window "{{ workload.window }}"
-          --max-candidates "{{ workload.max_candidates }}"
-          --runs-root "{{ workload.runs_root }}"
-          --repo-root "{{ workload.repo_root }}"
+        - |
+          cd "{{ workload.repo_root }}" || exit 2
+          task_cap="${VQCC_TASK_BUDGET_S:-{{ workload.dqi_budget_s }}}"
+          overall_cap="${VQCC_OPTIMIZE_BUDGET_S:-{{ workload.optimize_budget_s }}}"
+          grace="$(python3 -c 'import sys; t=float(sys.argv[1]); o=float(sys.argv[2]); print(max(1, int(min(t, o) + 90)))' "$task_cap" "$overall_cap")"
+          set +e
+          timeout --signal=TERM --kill-after="${VQCC_KILL_AFTER_S:-60}" "$grace" \
+            env PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline optimize \
+            --task dqi \
+            --time-budget-s "{{ workload.dqi_budget_s }}" \
+            --transform-budget-s "{{ workload.transform_budget_s }}" \
+            --optimize-budget-s "{{ workload.optimize_budget_s }}" \
+            --memory-budget-bytes "{{ workload.memory_budget_bytes }}" \
+            --window "{{ workload.window }}" \
+            --max-candidates "{{ workload.max_candidates }}" \
+            --runs-root "{{ workload.runs_root }}" \
+            --repo-root "{{ workload.repo_root }}"
+          ec=$?
+          set -e
+          if [ "$ec" -eq 124 ] || [ "$ec" -eq 137 ]; then
+            PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline mark-timeout \
+              --task dqi \
+              --runs-root "{{ workload.runs_root }}" \
+              --repo-root "{{ workload.repo_root }}"
+          elif [ "$ec" -ne 0 ]; then
+            exit "$ec"
+          fi
     next:
       - step: optimize_dfthcsos
 
@@ -217,17 +255,33 @@ workflow:
     tool:
       kind: shell
       cmds:
-        - >-
-          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline optimize
-          --task dfthcsos
-          --time-budget-s "{{ workload.dfthcsos_budget_s }}"
-          --transform-budget-s "{{ workload.transform_budget_s }}"
-          --optimize-budget-s "{{ workload.optimize_budget_s }}"
-          --memory-budget-bytes "{{ workload.memory_budget_bytes }}"
-          --window "{{ workload.window }}"
-          --max-candidates "{{ workload.max_candidates }}"
-          --runs-root "{{ workload.runs_root }}"
-          --repo-root "{{ workload.repo_root }}"
+        - |
+          cd "{{ workload.repo_root }}" || exit 2
+          task_cap="${VQCC_TASK_BUDGET_S:-{{ workload.dfthcsos_budget_s }}}"
+          overall_cap="${VQCC_OPTIMIZE_BUDGET_S:-{{ workload.optimize_budget_s }}}"
+          grace="$(python3 -c 'import sys; t=float(sys.argv[1]); o=float(sys.argv[2]); print(max(1, int(min(t, o) + 90)))' "$task_cap" "$overall_cap")"
+          set +e
+          timeout --signal=TERM --kill-after="${VQCC_KILL_AFTER_S:-60}" "$grace" \
+            env PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline optimize \
+            --task dfthcsos \
+            --time-budget-s "{{ workload.dfthcsos_budget_s }}" \
+            --transform-budget-s "{{ workload.transform_budget_s }}" \
+            --optimize-budget-s "{{ workload.optimize_budget_s }}" \
+            --memory-budget-bytes "{{ workload.memory_budget_bytes }}" \
+            --window "{{ workload.window }}" \
+            --max-candidates "{{ workload.max_candidates }}" \
+            --runs-root "{{ workload.runs_root }}" \
+            --repo-root "{{ workload.repo_root }}"
+          ec=$?
+          set -e
+          if [ "$ec" -eq 124 ] || [ "$ec" -eq 137 ]; then
+            PYTHONUNBUFFERED=1 python3 -u -m vqcc.pipeline mark-timeout \
+              --task dfthcsos \
+              --runs-root "{{ workload.runs_root }}" \
+              --repo-root "{{ workload.repo_root }}"
+          elif [ "$ec" -ne 0 ]; then
+            exit "$ec"
+          fi
     next:
       - step: cost
 

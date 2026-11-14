@@ -88,6 +88,9 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from vqcc.deadline import arm as arm_deadline
+from vqcc.deadline import check as check_deadline
+from vqcc.deadline import disarm as disarm_deadline
 from vqcc.profile import StructureProfiler, firing_bits
 from vqcc.qubit_values import ValueMap
 from vqcc.kickmix_file import (
@@ -123,14 +126,18 @@ _METADATA = {"INFO_TAG", "DEBUG_PRINT", "REGISTER", "APPEND_TO_REGISTER"}
 _BARRIER = {"PUSH_CONDITION", "POP_CONDITION"}
 _NO_MERGE = object()
 _TASKS = ("invsqrt", "dqi", "dfthcsos")
-# Nine hours for the optimize phase, split across the three tasks. dqi is
-# the large circuit. Each streaming transform (profile, restore, cancel,
-# reuse) is also capped so one of them cannot run until the Kaggle 12-hour
-# kill. Shares: invsqrt 15%, dqi 70%, dfthcsos 15%.
-DEFAULT_OPTIMIZE_BUDGET_S = 9 * 60 * 60
+# Seven hours for the optimize phase, split across the three tasks. dqi is
+# the large circuit. Seven hours plus verifier time stays under Kaggle's
+# 12-hour kill even when a transform is SIGKILLed after the 60 s grace.
+# Shares: invsqrt 15%, dqi 70%, dfthcsos 15%. 3780 + 17640 + 3780 = 25200.
+DEFAULT_OPTIMIZE_BUDGET_S = 7 * 60 * 60
 DEFAULT_TRANSFORM_BUDGET_S = 2 * 60 * 60
 TASK_BUDGET_SHARE = {"invsqrt": 0.15, "dqi": 0.70, "dfthcsos": 0.15}
-_PROGRESS_EVERY = 100_000
+# Cooperative checks run far more often than the old 100_000-gate stride.
+# A full cancellation window is 4096 gates, so this stride cannot hide a
+# multi-hour scan between checks. The process kill does not depend on it.
+_BEAT_EVERY = 4_096
+_BEAT_S = 60.0
 
 
 def task_budget_seconds(task: str, overall_s: float) -> float:
@@ -144,10 +151,80 @@ def task_budget_seconds(task: str, overall_s: float) -> float:
     return share * float(overall_s)
 
 
+class ProgressLog:
+    """Line-buffered progress that survives a kill.
+
+    Each line is flushed to every configured file and to stderr. noetl 5.3.2
+    local runtime returns a shell step's stdout and stderr only when that
+    step exits, so the files are what a notebook can ``tail -F`` while the
+    step is still running.
+    """
+
+    def __init__(
+        self,
+        paths: list[str],
+        task: str,
+        *,
+        deadline: float | None = None,
+    ) -> None:
+        self.task = task
+        self.deadline = deadline
+        self.started = time.monotonic()
+        self.next_beat = self.started
+        self.candidates = 0
+        self.eligible = 0
+        self.control_mutated = 0
+        self.handles = []
+        for path in paths:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            self.handles.append(open(path, "a", encoding="utf-8", buffering=1))
+
+    def close(self) -> None:
+        for handle in self.handles:
+            try:
+                handle.flush()
+                handle.close()
+            except OSError:
+                pass
+        self.handles.clear()
+
+    def emit(self, phase: str, gates: int) -> None:
+        elapsed = time.monotonic() - self.started
+        if self.deadline is None:
+            remaining = "-"
+        else:
+            remaining = f"{max(0.0, self.deadline - time.monotonic()):.1f}"
+        line = (
+            f"progress task={self.task} phase={phase} gates={gates} "
+            f"elapsed_s={elapsed:.1f} remaining_s={remaining} "
+            f"candidates={self.candidates} eligible={self.eligible} "
+            f"control_mutated={self.control_mutated}\n"
+        )
+        for handle in self.handles:
+            handle.write(line)
+            handle.flush()
+        try:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+        except OSError:
+            pass
+
+    def note_match(self, profiler: StructureProfiler | None) -> None:
+        if profiler is None:
+            return
+        counts = profiler.match_counts()
+        self.candidates = counts["candidates"]
+        self.eligible = counts["eligible"]
+        self.control_mutated = counts["control_mutated"]
+
+
 def _progress(task: str | None, gates: int, elapsed: float) -> None:
     print(
-        f"progress task={task or '-'} transforms=profile,restore,cancel,reuse "
-        f"gates={gates} elapsed_s={elapsed:.1f}",
+        f"progress task={task or '-'} phase=profile+restore+cancel+reuse "
+        f"gates={gates} elapsed_s={elapsed:.1f} remaining_s=- "
+        f"candidates=0 eligible=0 control_mutated=0",
         file=sys.stderr,
         flush=True,
     )
@@ -733,7 +810,9 @@ class _AndTracker:
             return None
         active = firing_bits(self.stack, op.condition)
         mismatched = False
-        for candidate in bucket:
+        for index, candidate in enumerate(bucket):
+            if index and index % 256 == 0:
+                check_deadline()
             if candidate == target:
                 continue
             record = self.open.get(candidate)
@@ -998,6 +1077,8 @@ def optimize_artifact(
     deadline: float | None = None,
     transform_budget_s: float | None = None,
     task: str | None = None,
+    progress: ProgressLog | None = None,
+    on_checkpoint=None,
 ) -> RewriteResult:
     """Write ``dst`` when the rewrite is a structural or cost reduction.
 
@@ -1014,11 +1095,26 @@ def optimize_artifact(
         if transform_budget_s < 0:
             raise OptimizeBudgetError("transform budget must be non-negative")
         transform_deadline = time.monotonic() + float(transform_budget_s)
+    if progress is not None:
+        progress.deadline = deadline
     _assert_separate(src, dst)
-    if not os.path.exists(src):
-        return RewriteResult(False, f"missing source {src}", {}, {}, task=task)
-    if os.path.isdir(src):
-        return _optimize_directory(
+    arm_deadline(deadline, transform_deadline)
+    try:
+        if not os.path.exists(src):
+            return RewriteResult(False, f"missing source {src}", {}, {}, task=task)
+        if os.path.isdir(src):
+            return _optimize_directory(
+                src,
+                dst,
+                window=window,
+                memory_budget_bytes=memory_budget_bytes,
+                deadline=deadline,
+                transform_deadline=transform_deadline,
+                task=task,
+                progress=progress,
+                on_checkpoint=on_checkpoint,
+            )
+        return _optimize_file(
             src,
             dst,
             window=window,
@@ -1026,16 +1122,11 @@ def optimize_artifact(
             deadline=deadline,
             transform_deadline=transform_deadline,
             task=task,
+            progress=progress,
+            on_checkpoint=on_checkpoint,
         )
-    return _optimize_file(
-        src,
-        dst,
-        window=window,
-        memory_budget_bytes=memory_budget_bytes,
-        deadline=deadline,
-        transform_deadline=transform_deadline,
-        task=task,
-    )
+    finally:
+        disarm_deadline()
 
 
 def _optimize_file(
@@ -1047,6 +1138,8 @@ def _optimize_file(
     deadline: float | None,
     transform_deadline: float | None = None,
     task: str | None,
+    progress: ProgressLog | None = None,
+    on_checkpoint=None,
 ) -> RewriteResult:
     kind = detect_format(src)
     if kind == "kmb":
@@ -1058,6 +1151,8 @@ def _optimize_file(
             deadline=deadline,
             transform_deadline=transform_deadline,
             task=task,
+            progress=progress,
+            on_checkpoint=on_checkpoint,
         )
     if kind == "kmx":
         return _optimize_kmx(
@@ -1068,6 +1163,8 @@ def _optimize_file(
             deadline=deadline,
             transform_deadline=transform_deadline,
             task=task,
+            progress=progress,
+            on_checkpoint=on_checkpoint,
         )
     return RewriteResult(
         False,
@@ -1139,21 +1236,45 @@ def _scan_kmx_scope(src: str, memory_budget_bytes: int) -> tuple[set[int], int, 
     return named, max_bit + 1, has_registers, used
 
 
-def _used_qubit_ids(view) -> set[int]:
-    """Qubit ids named by a kmb operand column. This does not build Op objects."""
+def _used_qubit_ids(
+    view,
+    deadline: float | None = None,
+    transform_deadline: float | None = None,
+) -> set[int]:
+    """Qubit ids named by a kmb operand column. This does not build Op objects.
+
+    Columns are scanned in chunks so a multi-million-gate file still hits
+    the deadline. The unique set is the header width, not the column length.
+    """
 
     found: set[int] = set()
+    chunk = 1_000_000
     for key in (Q1_0, Q2_0, Q2_1, Q3_0, Q3_1, Q3_2):
         column = view.columns.get(key)
         if not column:
             continue
         buffer = memoryview(column)
         try:
-            found.update(buffer.cast("I"))
+            ints = buffer.cast("I")
         except (TypeError, ValueError):
             for offset in range(0, len(buffer) - 3, 4):
+                if offset % (chunk * 4) == 0:
+                    _check_deadline(deadline, transform_deadline)
                 found.add(int.from_bytes(buffer[offset : offset + 4], "little"))
+            continue
+        for start in range(0, len(ints), chunk):
+            _check_deadline(deadline, transform_deadline)
+            found.update(ints[start : start + chunk])
     return found
+
+
+def _phase(progress: ProgressLog | None, on_checkpoint, phase: str, gates: int, profiler) -> None:
+    check_deadline()
+    if progress is not None:
+        progress.note_match(profiler)
+        progress.emit(phase, gates)
+    if on_checkpoint is not None:
+        on_checkpoint(phase, gates, profiler)
 
 
 def _optimize_kmb(
@@ -1165,6 +1286,8 @@ def _optimize_kmb(
     deadline: float | None,
     transform_deadline: float | None = None,
     task: str | None,
+    progress: ProgressLog | None = None,
+    on_checkpoint=None,
 ) -> RewriteResult:
     mapped, handle = open_kmb(src, memory_budget_bytes)
     partial = dst + ".partial"
@@ -1173,7 +1296,9 @@ def _optimize_kmb(
     before = GateCounts()
     try:
         _check_deadline(deadline, transform_deadline)
+        _phase(progress, on_checkpoint, "parse", 0, None)
         view = _parse_kmb(mapped)
+        _check_deadline(deadline, transform_deadline)
         writer = KmbWriter(partial, view.registers)
         seen = 0
         emitted_span = _Span()
@@ -1182,7 +1307,7 @@ def _optimize_kmb(
             nonlocal seen
             for op in iter_kmb_ops(view):
                 seen += 1
-                if seen % 100_000 == 0:
+                if seen % _BEAT_EVERY == 0:
                     _check_deadline(deadline, transform_deadline)
                 yield op
 
@@ -1191,7 +1316,7 @@ def _optimize_kmb(
             writer.emit(op)
 
         named, fresh_bit = _register_scope(view.registers, view.num_bits)
-        used_ids = _used_qubit_ids(view) | named
+        used_ids = _used_qubit_ids(view, deadline, transform_deadline) | named
         header = view.num_qubits
         if used_ids:
             header = max(header, max(used_ids) + 1)
@@ -1216,6 +1341,8 @@ def _optimize_kmb(
             profiler=profiler,
             used_ids=used_ids,
             header_qubits=header,
+            progress=progress,
+            on_checkpoint=on_checkpoint,
         )
         profile = profiler.finish()
         # Q is max qubit id + 1, including ids named by a register. A scratch
@@ -1224,6 +1351,7 @@ def _optimize_kmb(
         if seen != view.num_ops:
             raise KickmixFormatError(f"read {seen} operations, header says {view.num_ops}")
         _check_deadline(deadline, transform_deadline)
+        _phase(progress, on_checkpoint, "materialize", seen, profiler)
         after = writer.counts
         qubits_before = view.num_qubits
         qubits_after = _qubit_width(emitted_span.max_qubit, named)
@@ -1257,6 +1385,8 @@ def _optimize_kmx(
     deadline: float | None,
     transform_deadline: float | None = None,
     task: str | None,
+    progress: ProgressLog | None = None,
+    on_checkpoint=None,
 ) -> RewriteResult:
     partial_handle = tempfile.NamedTemporaryFile(prefix="vqcc-kmx-", suffix=".kmx", delete=False)
     partial = partial_handle.name
@@ -1269,9 +1399,14 @@ def _optimize_kmx(
     named, fresh_bit, has_registers, used_ids = _scan_kmx_scope(src, memory_budget_bytes)
     try:
         _check_deadline(deadline, transform_deadline)
+        _phase(progress, on_checkpoint, "parse", 0, None)
 
         def ops():
+            seen = 0
             for op in read_kmx_ops(src, memory_budget_bytes):
+                seen += 1
+                if seen % _BEAT_EVERY == 0:
+                    _check_deadline(deadline, transform_deadline)
                 source_span.note(op)
                 yield op
 
@@ -1296,8 +1431,11 @@ def _optimize_kmx(
                 profiler=profiler,
                 used_ids=used_ids | named,
                 header_qubits=(max(used_ids | named) + 1) if (used_ids or named) else 0,
+                progress=progress,
+                on_checkpoint=on_checkpoint,
             )
         _check_deadline(deadline, transform_deadline)
+        _phase(progress, on_checkpoint, "materialize", before.instructions, profiler)
         qubits_before = _qubit_width(source_span.max_qubit, named)
         qubits_after = _qubit_width(emitted_span.max_qubit, named)
         profiler.header_qubits = qubits_before
@@ -1332,6 +1470,8 @@ def _optimize_directory(
     deadline: float | None,
     transform_deadline: float | None = None,
     task: str | None,
+    progress: ProgressLog | None = None,
+    on_checkpoint=None,
 ) -> RewriteResult:
     """Rewrite a dfthcsos-style directory. Non-circuits are copied byte for byte.
 
@@ -1370,6 +1510,8 @@ def _optimize_directory(
                     deadline=deadline,
                     transform_deadline=transform_deadline,
                     task=task,
+                    progress=progress,
+                    on_checkpoint=on_checkpoint,
                 )
                 file_before_q = int((file_result.before or {}).get("qubits") or 0)
                 file_after_q = int((file_result.after or {}).get("qubits") or 0)
@@ -1624,29 +1766,67 @@ def _phase_key(key: tuple[int, int | None]) -> tuple[int, int]:
     return (qubit, -1 if condition is None else condition)
 
 
+def _cancel_key(op: Op):
+    """Identity of the gate a later copy can cancel or overwrite.
+
+    ``None`` means this opcode cannot cancel or overwrite anything in the
+    window. The cancellation scan used to walk every commuting gate anyway,
+    which is O(window) per gate. On dqi that window is full of CX that share
+    a routing qubit and therefore commute, and there is usually no partner.
+    """
+
+    name = op.name
+    if name in {"BIT_STORE0", "BIT_STORE1"}:
+        return ("store", op.bits, op.condition)
+    if name not in _SELF_INVERSE:
+        return None
+    cond = op.condition
+    if name in {"CZ", "SWAP", "CCZ"}:
+        return (name, frozenset(op.qubits), cond)
+    if name == "CCX" and len(op.qubits) == 3:
+        return (name, frozenset(op.qubits[:2]), op.qubits[2], cond)
+    if name == "CSWAP" and len(op.qubits) == 3:
+        return (name, op.qubits[0], frozenset(op.qubits[1:]), cond)
+    return (name, op.qubits, op.bits, cond)
+
+
 class _Hold:
     """Bounded window of gates that can still cancel or merge.
 
-    Lookup walks only gates that share a qubit or bit, plus condition
-    barriers. Disjoint gates commute and are not scanned, so a wide window
-    stays cheap on a circuit whose gates are local.
+    A self-inverse gate looks up its partner by key and, only when one is
+    still in the window, walks the gates between them. A gate with no
+    partner does not scan the window. Disjoint gates commute and are not
+    scanned. Z rotations are merged outside this window.
     """
 
-    def __init__(self, window: int) -> None:
+    def __init__(
+        self,
+        window: int,
+        *,
+        deadline: float | None = None,
+        transform_deadline: float | None = None,
+    ) -> None:
         self.window = window
+        self.deadline = deadline
+        self.transform_deadline = transform_deadline
         self.ops: list[Op | None] = []
         self.start = 0
         self.live = 0
         self.qtouch: dict[int, list[int]] = {}
         self.btouch: dict[int, list[int]] = {}
         self.barriers: list[int] = []
+        self.by_key: dict[tuple, list[int]] = {}
 
     def push(self, op: Op, stats: PassStats) -> None:
         index = len(self.ops)
         self.ops.append(op)
         self.live += 1
-        self._index(index, op)
+        self._index_touch(index, op)
         self._reduce(stats)
+        if index < len(self.ops) and self.ops[index] is not None:
+            self._index_key(index, self.ops[index])
+        if len(self.ops) >= self.window * 2:
+            self._force_compact()
 
     def overflow(self) -> bool:
         return self.live > self.window
@@ -1691,8 +1871,85 @@ class _Hold:
             self._delete(previous)
             stats.empty_conditions += 1
             return True
+        # Phases are pulled out before the window. Keep the commuting scan
+        # for one that still arrives, so a merge across commuting gates
+        # stays the same operation as before.
+        if current.name in _PHASE:
+            return self._scan_commuting(last, current, stats)
+        partner = self._live_partner(current, last)
+        if partner is None:
+            return False
+        return self._apply_if_reachable(last, current, partner, stats)
+
+    def _live_partner(self, current: Op, before: int) -> int | None:
+        key = _cancel_key(current)
+        if key is None:
+            return None
+        indices = self.by_key.get(key)
+        if not indices:
+            return None
+        # The current gate is not in by_key yet. Drop dead tails so a run
+        # of cancelled copies does not rescan them on the next gate.
+        while indices:
+            idx = indices[-1]
+            if idx >= before:
+                indices.pop()
+                continue
+            op = self.ops[idx] if self.start <= idx < len(self.ops) else None
+            if op is None or _cancel_key(op) != key:
+                indices.pop()
+                continue
+            return idx
+        if not indices:
+            self.by_key.pop(key, None)
+        return None
+
+    def _apply_if_reachable(self, last: int, current: Op, partner: int, stats: PassStats) -> bool:
+        """Cancel or overwrite ``partner`` when every gate between them commutes."""
+
         cursor = last
+        steps = 0
         while True:
+            steps += 1
+            if steps % 128 == 0:
+                _check_deadline(self.deadline, self.transform_deadline)
+            earlier_index = self._next_relevant(current, cursor)
+            if earlier_index is None or earlier_index < partner:
+                return False
+            earlier = self.ops[earlier_index]
+            assert earlier is not None
+            if earlier_index != partner:
+                if earlier.name in _BARRIER or current.name in _BARRIER or not _commutes(earlier, current):
+                    return False
+                cursor = earlier_index
+                continue
+            if _cancels(earlier, current):
+                self._delete(last)
+                self._delete(earlier_index)
+                stats.cancelled_pairs += 1
+                return True
+            if _overwrites(current, earlier):
+                self._delete(earlier_index)
+                stats.store_overwrites += 1
+                return True
+            merged = _try_merge(earlier, current)
+            if merged is not _NO_MERGE:
+                self._delete(last)
+                if merged is None:
+                    self._delete(earlier_index)
+                else:
+                    self.ops[earlier_index] = merged
+                stats.merged_rotations += 1
+                return True
+            return False
+
+    def _scan_commuting(self, last: int, current: Op, stats: PassStats) -> bool:
+        cursor = last
+        steps = 0
+        while True:
+            steps += 1
+            if steps % 128 == 0:
+                _check_deadline(self.deadline, self.transform_deadline)
             earlier_index = self._next_relevant(current, cursor)
             if earlier_index is None:
                 return False
@@ -1741,7 +1998,11 @@ class _Hold:
         if not indices:
             return None
         position = bisect.bisect_left(indices, before) - 1
+        scanned = 0
         while position >= 0:
+            scanned += 1
+            if scanned % 4_096 == 0:
+                _check_deadline(self.deadline, self.transform_deadline)
             idx = indices[position]
             if idx >= self.start and self.ops[idx] is not None:
                 return idx
@@ -1764,13 +2025,19 @@ class _Hold:
             cursor -= 1
         return None
 
-    def _index(self, index: int, op: Op) -> None:
+    def _index_touch(self, index: int, op: Op) -> None:
         for qubit in op.qubits:
             self.qtouch.setdefault(qubit, []).append(index)
         for bit in _bits_of(op):
             self.btouch.setdefault(bit, []).append(index)
         if op.name in _BARRIER:
             self.barriers.append(index)
+
+    def _index_key(self, index: int, op: Op) -> None:
+        key = _cancel_key(op)
+        if key is None:
+            return
+        self.by_key.setdefault(key, []).append(index)
 
     def _delete(self, index: int) -> None:
         if self.ops[index] is None:
@@ -1779,17 +2046,24 @@ class _Hold:
         self.live -= 1
 
     def _maybe_compact(self) -> None:
-        if self.start < self.window:
+        if self.start < self.window and len(self.ops) < self.window * 2:
             return
+        self._force_compact()
+
+    def _force_compact(self) -> None:
         live = [op for op in self.ops[self.start :] if op is not None]
+        if self.start == 0 and len(live) == len(self.ops):
+            return
         self.ops = live
         self.start = 0
         self.live = len(live)
         self.qtouch.clear()
         self.btouch.clear()
         self.barriers.clear()
+        self.by_key.clear()
         for index, op in enumerate(live):
-            self._index(index, op)
+            self._index_touch(index, op)
+            self._index_key(index, op)
 
 
 class _LifetimeMap:
@@ -1938,9 +2212,11 @@ def _rewrite_ops(
     profiler: StructureProfiler | None = None,
     used_ids: set[int] | None = None,
     header_qubits: int | None = None,
+    progress: ProgressLog | None = None,
+    on_checkpoint=None,
 ) -> None:
     named = set(named_qubits or ())
-    hold = _Hold(window)
+    hold = _Hold(window, deadline=deadline, transform_deadline=transform_deadline)
     pending = _Pending()
     tracker = _AndTracker(
         named=named,
@@ -1960,7 +2236,28 @@ def _rewrite_ops(
         profiler.note_register_qubits(named)
     seen = 0
     started = time.monotonic()
-    _progress(task, 0, 0.0)
+    next_beat = started
+
+    def beat(phase: str, *, force: bool = False) -> None:
+        nonlocal next_beat
+        _check_deadline(deadline, transform_deadline)
+        now = time.monotonic()
+        if not force and now < next_beat:
+            return
+        if progress is not None:
+            progress.note_match(profiler)
+            progress.emit(phase, seen)
+        elif force or seen == 0:
+            _progress(task, seen, now - started)
+        if on_checkpoint is not None:
+            on_checkpoint(phase, seen, profiler)
+        next_beat = now + _BEAT_S
+
+    # One streaming pass runs these transforms together. Each name is a
+    # phase boundary so a log from a killed run shows the pass was entered
+    # under the deadline, not only the gate counter.
+    for phase in ("profile", "restore", "cancel", "reuse"):
+        beat(phase, force=True)
 
     def emit_ready(ready: Op) -> None:
         hold.push(ready, stats)
@@ -1973,9 +2270,8 @@ def _rewrite_ops(
 
     for op in ops:
         seen += 1
-        if seen % _PROGRESS_EVERY == 0:
-            _check_deadline(deadline, transform_deadline)
-            _progress(task, seen, time.monotonic() - started)
+        if seen % _BEAT_EVERY == 0:
+            beat("profile+restore+cancel+reuse")
         if profiler is not None:
             profiler.note(op)
         before.add(op)
@@ -1994,9 +2290,7 @@ def _rewrite_ops(
         push(flushed)
     for op in hold.drain():
         emit(reuse.apply(op))
-    _check_deadline(deadline, transform_deadline)
-    if seen >= _PROGRESS_EVERY:
-        _progress(task, seen, time.monotonic() - started)
+    beat("profile+restore+cancel+reuse", force=True)
 
 
 def _cancels(earlier: Op, current: Op) -> bool:
@@ -2204,16 +2498,7 @@ def _check_deadline(
     deadline: float | None,
     transform_deadline: float | None = None,
 ) -> None:
-    now = time.monotonic()
-    if transform_deadline is not None and now >= transform_deadline:
-        raise OptimizeBudgetError(
-            "transform time budget exhausted (profile, restore, cancel, reuse). "
-            "The unmodified circuit for this task was kept."
-        )
-    if deadline is not None and now >= deadline:
-        raise OptimizeBudgetError(
-            "time budget exhausted. The unmodified circuit for this task was kept."
-        )
+    check_deadline(deadline, transform_deadline)
 
 
 def _unlink(path: str) -> None:

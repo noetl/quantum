@@ -18,10 +18,12 @@ from vqcc.orchestrator import (
     adapt_task,
     check_data,
     cost,
+    mark_timeout,
     optimize_task,
     package,
     prepare_run,
     record,
+    run_optimize_transform,
     verify,
     verify_official,
 )
@@ -68,6 +70,21 @@ def main(argv: list[str] | None = None) -> int:
     opt.add_argument("--max-candidates", type=int, default=1)
     opt.add_argument("--verify-timeout", type=int, default=None)
     opt.set_defaults(func=_optimize)
+    mark = sub.add_parser("mark-timeout", parents=[common])
+    mark.add_argument("--task", required=True)
+    mark.set_defaults(func=_mark_timeout)
+    transform = sub.add_parser("optimize-transform", parents=[common])
+    transform.add_argument("--task", required=True)
+    transform.add_argument("--src", required=True)
+    transform.add_argument("--dst", required=True)
+    transform.add_argument("--window", type=int, required=True)
+    transform.add_argument("--memory-budget-bytes", type=int, required=True)
+    transform.add_argument("--deadline-epoch", type=float, required=True)
+    transform.add_argument("--transform-budget-s", type=float, required=True)
+    transform.add_argument("--result", required=True)
+    transform.add_argument("--profile", required=True)
+    transform.add_argument("--log", action="append", default=[])
+    transform.set_defaults(func=_optimize_transform)
     cost_cmd = sub.add_parser("cost", parents=[common])
     cost_cmd.add_argument(
         "--aggregate",
@@ -123,6 +140,21 @@ def _verify_one(args: argparse.Namespace) -> dict:
         seed=args.seed,
         timeout_s=args.timeout,
     )
+
+
+def _mark_timeout(args: argparse.Namespace) -> dict:
+    return mark_timeout(args.repo_root, args.runs_root, args.task)
+
+
+def _optimize_transform(args: argparse.Namespace) -> dict:
+    code = run_optimize_transform(args)
+    # The parent reads the result file. A non-zero code is the timeout or
+    # error signal; the JSON on stdout stays a single object for the CLI.
+    if code == 0:
+        return {"step": "optimize-transform", "status": "ok", "leaderboard_score": None}
+    if code == 124:
+        return {"step": "optimize-transform", "status": "timeout", "leaderboard_score": None}
+    raise PipelineError(f"optimize-transform failed with status {code}")
 
 
 def _optimize(args: argparse.Namespace) -> dict:

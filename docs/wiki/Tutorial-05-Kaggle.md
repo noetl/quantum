@@ -47,11 +47,21 @@ rules this repo already enforces. Where the log is silent, the step is marked.
    `PATH`:
 
    ```bash
+   mkdir -p /kaggle/working/runs
+   # noetl 5.3.2 holds each shell step's stdout until the step exits.
+   # The optimize steps append here, flushed every line.
+   tail -n +1 -F /kaggle/working/runs/optimize-progress.log &
+   TAIL_PID=$!
+   set +e
    noetl run playbooks/vqcc_optimize.yaml --runtime local --json \
      --set data_dir=/kaggle/input/competitions/google-verifiable-quantum-circuit-compilation \
      --set runs_root=/kaggle/working/runs \
      --set repo_root="$PWD" \
      --set seed=20261108
+   echo "EXIT: $?"
+   set -e
+   kill "$TAIL_PID" 2>/dev/null || true
+   wait "$TAIL_PID" 2>/dev/null || true
    ```
 
    or the same steps without the CLI:

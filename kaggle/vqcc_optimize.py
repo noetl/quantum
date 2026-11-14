@@ -58,9 +58,9 @@ from vqcc.pipeline import main as pipeline_main  # noqa: E402
 KAGGLE_DATA = Path(
     "/kaggle/input/competitions/google-verifiable-quantum-circuit-compilation"
 )
-# Nine hours for every optimize step together, under the 12-hour Kaggle kill.
+# Seven hours for every optimize step together, under the 12-hour Kaggle kill.
 # dqi is the large circuit. Each transform is capped on its own.
-_OPTIMIZE_BUDGET_S = 9 * 60 * 60
+_OPTIMIZE_BUDGET_S = 7 * 60 * 60
 _TRANSFORM_BUDGET_S = 2 * 60 * 60
 _TASK_SHARE = {"invsqrt": 0.15, "dqi": 0.70, "dfthcsos": 0.15}
 
