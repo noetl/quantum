@@ -1,11 +1,16 @@
 """Build a competition submission zip from files the caller already has.
 
-The layout follows the team hub:
+The layout follows the competition's sample_submission/ and the official
+dfthcsos verifier (verifiers/dfthcsos/SCORING_README.md, "Submission files"):
 
     invsqrt.kmb or invsqrt.kmx
     dqi.kmb or dqi.kmx
-    dfthcsos/angle_k_0 .. angle_k_N    (no gaps, no extra extension)
+    dfthcsos/angle_k_0.kmb .. angle_k_N.kmb   (or all .kmx; no gaps)
     dfthcsos/submission.npz            (U, W, H2_I, H1_I, Hsym_lower, tree_edges)
+
+The team hub listed extensionless angle_k_N names. The official verifier
+looks for angle_k_*.kmb or angle_k_*.kmx, and the sample ships .kmb, so an
+extensionless angle file is rejected here (issue #7).
 
 This module does not create circuits and does not fill in missing arrays.
 """
@@ -25,6 +30,9 @@ REQUIRED_NPZ_KEYS = (
     "Hsym_lower",
     "tree_edges",
 )
+
+
+_CIRCUIT_EXTENSIONS = (".kmb", ".kmx")
 
 
 class PackageError(ValueError):
@@ -82,23 +90,38 @@ def inspect_dfthcsos_dir(directory: Path) -> list[str]:
     files = sorted(path for path in directory.iterdir() if path.is_file())
     unexpected: list[str] = []
     indices: list[int] = []
+    extensions: set[str] = set()
     has_npz = False
     for path in files:
         name = path.name
         if name == "submission.npz":
             has_npz = True
             continue
-        suffix = name.removeprefix("angle_k_")
-        # Canonical hub names are angle_k_0, angle_k_1, ... with no leading zeros.
-        if name.startswith("angle_k_") and suffix.isdigit() and str(int(suffix)) == suffix:
+        stem, extension = path.stem, path.suffix
+        suffix = stem.removeprefix("angle_k_")
+        # Official names are angle_k_0.kmb, angle_k_1.kmb, ... (or .kmx),
+        # with no leading zeros.
+        if (
+            extension in _CIRCUIT_EXTENSIONS
+            and stem.startswith("angle_k_")
+            and suffix.isdigit()
+            and str(int(suffix)) == suffix
+        ):
             indices.append(int(suffix))
+            extensions.add(extension)
             continue
         unexpected.append(name)
 
     if unexpected:
         raise PackageError(
-            "unexpected files in dfthcsos (hub names are angle_k_0..N with "
-            "no extension, plus submission.npz): " + ", ".join(unexpected)
+            "unexpected files in dfthcsos (official names are angle_k_0..N "
+            "with a .kmb or .kmx extension, plus submission.npz): "
+            + ", ".join(unexpected)
+        )
+    if len(extensions) > 1:
+        raise PackageError(
+            "angle files mix .kmb and .kmx; the verifier detects one format "
+            "from angle_k_0: " + ", ".join(sorted(extensions))
         )
     if not has_npz:
         raise PackageError("missing dfthcsos/submission.npz")
@@ -113,14 +136,15 @@ def inspect_dfthcsos_dir(directory: Path) -> list[str]:
             f"found indices {indices}"
         )
     _require_npz_keys(directory / "submission.npz")
-    return [f"angle_k_{index}" for index in indices]
+    (extension,) = extensions
+    return [f"angle_k_{index}{extension}" for index in indices]
 
 
 def _circuit_extension(path: Path, label: str) -> str:
     if not path.is_file():
         raise PackageError(f"missing {label} circuit: {path}")
     extension = path.suffix.lower()
-    if extension not in {".kmb", ".kmx"}:
+    if extension not in _CIRCUIT_EXTENSIONS:
         raise PackageError(f"{label} must be a .kmb or .kmx file, got {path.name}")
     return extension
 

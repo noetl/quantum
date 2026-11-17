@@ -103,9 +103,10 @@ US3, FR-011, FR-012, FR-013, FR-014, SC-003.
 - [ ] No submission zip has been produced from an accepted optimize candidate.
       Version 9 retained invsqrt and the notebook stayed private. No Kaggle
       submission was made.
-- [ ] The sample's `angle_k_*.kmb` names use an extension. The packager still
-      requires extensionless hub names. That is unresolved. Do not "fix" it
-      inside a docs change.
+- [x] The packager takes the official `angle_k_N.kmb` / `.kmx` names. It
+      packaged the real `sample_submission/`, and the official dfthcsos
+      verifier returned `PASS` (3355599588.3155375) on the extracted zip,
+      run locally on 2026-11-17. That is a layout check, not a Kaggle score.
 
 ## Optimization loop — issue [#9](https://github.com/noetl/quantum/issues/9), open
 

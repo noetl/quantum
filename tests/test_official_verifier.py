@@ -39,7 +39,8 @@ def _official_tree(root: Path, body: str, fixture: bool) -> None:
     (root / "sample_submission" / "dqi.kmb").write_bytes(b"dqi")
     df = root / "sample_submission" / "dfthcsos"
     df.mkdir()
-    (df / "angle_k_0").write_bytes(b"angle")
+    # The real sample ships angle_k_N.kmb (issue #7).
+    (df / "angle_k_0.kmb").write_bytes(b"angle")
     with zipfile.ZipFile(df / "submission.npz", "w") as archive:
         for key in REQUIRED_NPZ_KEYS:
             archive.writestr(f"{key}.npy", b"not-a-real-array")

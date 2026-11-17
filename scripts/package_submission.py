@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
         "--dfthcsos",
         type=Path,
         required=True,
-        help="directory with angle_k_0..N and submission.npz",
+        help="directory with angle_k_0..N.kmb (or .kmx) and submission.npz",
     )
     parser.add_argument(
         "--output",

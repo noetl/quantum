@@ -108,9 +108,10 @@ in the attached logs.
 
 These came out of the same logs. They are not resolved either.
 
-- Sample angle files are `angle_k_0.kmb` through `angle_k_9.kmb`. The hub
-  layout and `vqcc/packaging.py` still use extensionless `angle_k_0` …
-  `angle_k_N`. Open question 4 in [docs/open-questions.md](../open-questions.md).
+- Resolved (issue #7): sample angle files are `angle_k_0.kmb` through
+  `angle_k_9.kmb`, the official verifier reads that form, and
+  `vqcc/packaging.py` now requires it. Open question 4 in
+  [docs/open-questions.md](../open-questions.md).
 - The captured dfthcsos README says the verifier ignores extra files. The
   packager rejects them (FR-014's neighborhood, and the edge case in the
   spec). Both statements can be true: the verifier is looser than our zip

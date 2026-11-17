@@ -58,10 +58,9 @@ and `submission.npz`. The verifier README captured in the version 8 log says
 the npz holds `U`, `W`, `H2_I`, `H1_I`, `Hsym_lower`, and `tree_edges`, and
 that submitted `H1_I` and `Hsym_lower` are ignored in favor of a fixed
 baseline shift. It also says other files in the directory are ignored by
-that verifier. This repo's packager is stricter: `vqcc/packaging.py` still
-expects the hub names `angle_k_0` … `angle_k_N` with no extension and no
-extra files (FR-012, FR-014). That mismatch is an open packaging question,
-not a silent change to the packager. See [Open questions](Tutorial-09-Open-Questions).
+that verifier. This repo's packager now takes the official names `angle_k_0.kmb` …
+`angle_k_N.kmb` (or all `.kmx`) and still rejects extra files (FR-012,
+FR-014). The hub's extensionless names were wrong (issue #7).
 
 ## Why the samples are not in git
 

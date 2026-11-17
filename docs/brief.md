@@ -122,7 +122,7 @@ official one by default.
   `Λ > 49.0` Ha and `E_gap > 3.914898` Ha, and says `λ_eff` has no separate
   floor. The inequality direction was not re-read from the Kaggle file.
 
-**Deliverable:** `dfthcsos/angle_k_0` … `angle_k_N` with no gaps, plus
+**Deliverable:** `dfthcsos/angle_k_0.kmb` … `angle_k_N.kmb` (or all `.kmx`) with no gaps, plus
 `dfthcsos/submission.npz` with `U`, `W`, `H2_I`, `H1_I`, `Hsym_lower`, and
 `tree_edges`.
 
@@ -170,7 +170,7 @@ One zip:
 
 - `invsqrt.kmb` or `invsqrt.kmx`
 - `dqi.kmb` or `dqi.kmx`
-- `dfthcsos/angle_k_0` … `dfthcsos/angle_k_N` (no gaps)
+- `dfthcsos/angle_k_0.kmb` … `dfthcsos/angle_k_N.kmb` (or all `.kmx`; no gaps). The official verifier reads these extensions; the hub's extensionless names were wrong (issue #7).
 - `dfthcsos/submission.npz`
 
 This layout is from the hub. The Kaggle data page that would show the sample

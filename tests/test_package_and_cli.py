@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -25,19 +26,21 @@ def _npz(path: Path, keys: tuple[str, ...] = REQUIRED_NPZ_KEYS) -> None:
             archive.writestr(f"{key}.npy", b"not-a-real-array")
 
 
-def _task_dir(root: Path, angles: list[int], extra: str | None = None) -> Path:
+def _task_dir(
+    root: Path, angles: list[int], extra: str | None = None, extension: str = ".kmb"
+) -> Path:
     directory = root / "dfthcsos"
     directory.mkdir()
     _npz(directory / "submission.npz")
     for index in angles:
-        (directory / f"angle_k_{index}").write_bytes(b"angle")
+        (directory / f"angle_k_{index}{extension}").write_bytes(b"angle")
     if extra:
         (directory / extra).write_text("scratch", encoding="utf-8")
     return directory
 
 
 class PackageTests(unittest.TestCase):
-    def test_writes_hub_layout(self) -> None:
+    def test_writes_official_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             inv = root / "mine.kmb"
@@ -58,9 +61,9 @@ class PackageTests(unittest.TestCase):
                     "invsqrt.kmb",
                     "dqi.kmx",
                     "dfthcsos/submission.npz",
-                    "dfthcsos/angle_k_0",
-                    "dfthcsos/angle_k_1",
-                    "dfthcsos/angle_k_2",
+                    "dfthcsos/angle_k_0.kmb",
+                    "dfthcsos/angle_k_1.kmb",
+                    "dfthcsos/angle_k_2.kmb",
                 ],
             )
             with zipfile.ZipFile(output) as archive:
@@ -80,9 +83,49 @@ class PackageTests(unittest.TestCase):
             bad = root / "bad"
             bad.mkdir()
             _npz(bad / "submission.npz", keys=("U",))
-            (bad / "angle_k_0").write_bytes(b"a")
+            (bad / "angle_k_0.kmb").write_bytes(b"a")
             with self.assertRaises(PackageError):
                 inspect_dfthcsos_dir(bad)
+
+    def test_kmx_family_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = _task_dir(Path(tmp), [0, 1], extension=".kmx")
+            self.assertEqual(inspect_dfthcsos_dir(directory), ["angle_k_0.kmx", "angle_k_1.kmx"])
+
+    def test_extensionless_hub_names_are_rejected(self) -> None:
+        # Issue #7. The official verifier reads angle_k_*.kmb or .kmx only.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = _task_dir(Path(tmp), [0, 1], extension="")
+            with self.assertRaises(PackageError) as caught:
+                inspect_dfthcsos_dir(directory)
+            self.assertIn(".kmb or .kmx", str(caught.exception))
+
+    def test_mixed_extensions_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = _task_dir(Path(tmp), [0])
+            (directory / "angle_k_1.kmx").write_bytes(b"angle")
+            with self.assertRaises(PackageError):
+                inspect_dfthcsos_dir(directory)
+
+    def test_competition_sample_layout_packages(self) -> None:
+        """The real sample_submission/ tree, when VQCC_DATA_DIR points at the data."""
+
+        data = os.environ.get("VQCC_DATA_DIR", "").strip()
+        sample = Path(data) / "sample_submission" if data else None
+        if sample is None or not (sample / "dfthcsos").is_dir():
+            self.skipTest("VQCC_DATA_DIR with sample_submission/ is not set")
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "submission.zip"
+            payload = build_submission_zip(
+                invsqrt=sample / "invsqrt.kmb",
+                dqi=sample / "dqi.kmb",
+                dfthcsos_dir=sample / "dfthcsos",
+                output=output,
+            )
+            self.assertEqual(payload["entries"][:3], ["invsqrt.kmb", "dqi.kmb", "dfthcsos/submission.npz"])
+            self.assertTrue(all(name.endswith(".kmb") for name in payload["entries"][3:]))
+            with zipfile.ZipFile(output) as archive:
+                self.assertIsNone(archive.testzip())
 
 
 class CliTests(unittest.TestCase):
