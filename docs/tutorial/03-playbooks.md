@@ -61,7 +61,7 @@ Defaults on the optimize playbook, from the workload block:
 | Key | Value | Meaning |
 | --- | --- | --- |
 | `optimize_budget_s` | 25200 | Wall clock for every optimize step together (7 hours). Stays under Kaggle's 12-hour kill. Not a target runtime. `VQCC_OPTIMIZE_BUDGET_S` overrides the playbook value. |
-| `transform_budget_s` | 7200 | Cap for each streaming transform (`profile`, `restore`, `cancel`, `reuse`). On expiry that task keeps the unmodified circuit. `VQCC_TRANSFORM_BUDGET_S` overrides it. |
+| `transform_budget_s` | 16200 | Cap for each streaming transform (`profile`, `restore`, `cancel`, `reuse`). Each task's share also caps it, so only dqi can reach 16200 s, leaving 1440 s of its share for the official verifier. On expiry that task keeps the unmodified circuit. `VQCC_TRANSFORM_BUDGET_S` overrides it. |
 | `invsqrt_budget_s` | 3780 | invsqrt's share of `optimize_budget_s` (15%). |
 | `dqi_budget_s` | 17640 | dqi's share (70%). dqi is the large circuit. |
 | `dfthcsos_budget_s` | 3780 | dfthcsos's share (15%). The three shares sum to 25200. `VQCC_TASK_BUDGET_S` overrides one task's share. |

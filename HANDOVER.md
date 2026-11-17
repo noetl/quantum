@@ -109,6 +109,9 @@ takes about 28 minutes. Leave them in place unless time runs short.
 - The default optimize budget is now 25200 s (7 h): invsqrt 3780 s, dqi 17640 s,
   dfthcsos 3780 s. The env overrides are `VQCC_OPTIMIZE_BUDGET_S`,
   `VQCC_TASK_BUDGET_S` and `VQCC_TRANSFORM_BUDGET_S`.
+- Correction after version 13: under PR #26, each transform was also capped by
+  `transform_budget_s` (7200 s), so dqi got 2 h, not 17640 s. The cap is now
+  16200 s, and each task's share still bounds it.
 - Root cause of the overrun: the cancellation window scanned the whole
   cancellation window even when a gate had no inverse partner, and the
   deadline check was only cooperative.
