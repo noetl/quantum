@@ -15,6 +15,16 @@ the original atom, so the match stays rejected. An expression that grows
 past the term cap collapses to a fresh opaque atom and also stays rejected.
 Both choices are incomplete on purpose: a value that compares equal really
 was restored or relocated.
+
+Nonlinear tokens are interned. A token's key holds the frozen values of
+its inputs, and those values hold only integer ids, never nested tokens.
+Without interning, an AND of an AND embeds both copies of its inputs, so
+the frozen size doubles along a carry chain. On invsqrt that reached about
+4 million characters after 256 ops, and each later gate rehashed and sorted
+it. Equal keys get the same id, so equality is unchanged. When the table
+passes ``_TOKEN_LIMIT`` it is cleared and ids keep counting up. A token
+built after the clear gets a new id, which can only make a value compare
+unequal. That rejects a match and never accepts a false one.
 """
 
 from __future__ import annotations
@@ -25,6 +35,9 @@ from vqcc.kickmix_file import Op
 
 _CAP = 8
 _OPAQUE_BASE = 1 << 40
+# Interned nonlinear tokens kept before the table is cleared. Each key is a
+# short tuple of ints, so this bounds the table to a few hundred MB.
+_TOKEN_LIMIT = 2_000_000
 # Open (not yet undone) writes kept per qubit. Past this the qubit's
 # pending history is dropped and every AND that was opened before the
 # overflow is no longer treated as restored. That is incomplete and sound:
@@ -49,11 +62,14 @@ _PHASE_OR_META = {
 
 @dataclass(frozen=True, slots=True)
 class Val:
-    """XOR of ``terms``, a constant ``flip``, and nonlinear ``extra`` tokens."""
+    """XOR of ``terms``, a constant ``flip``, and nonlinear ``extra`` tokens.
+
+    ``extra`` holds interned token ids from the owning ``ValueMap``.
+    """
 
     terms: frozenset[int]
     flip: bool
-    extra: frozenset[tuple]
+    extra: frozenset[int]
 
     def is_atom(self, qubit: int) -> bool:
         return self.terms == frozenset((qubit,)) and not self.flip and not self.extra
@@ -146,6 +162,22 @@ class ValueMap:
         self._bit_epoch: dict[int, int] = {}
         self._logs: dict[int, _WriteLog] = {}
         self._opaque_id = _OPAQUE_BASE
+        self._tokens: dict[tuple, int] = {}
+        self._token_id = 0
+        self.token_resets = 0
+
+    def _token(self, key: tuple) -> Val:
+        """The value holding one interned nonlinear token for ``key``."""
+
+        found = self._tokens.get(key)
+        if found is None:
+            if len(self._tokens) >= _TOKEN_LIMIT:
+                self._tokens.clear()
+                self.token_resets += 1
+            self._token_id += 1
+            found = self._token_id
+            self._tokens[key] = found
+        return Val(frozenset(), False, frozenset((found,)))
 
     def epoch(self, qubit: int) -> int:
         log = self._logs.get(qubit)
@@ -205,9 +237,9 @@ class ValueMap:
             return
         if name == "CCX" and len(op.qubits) == 3:
             left, right, target = op.qubits
-            token = ("and", _freeze(self.read(left)), _freeze(self.read(right)))
-            self._note(target, ("CCX", token, self.epoch_key(firing)))
-            self._xor_into(target, self._under(firing, Val(frozenset(), False, frozenset((token,)))))
+            token = self._token(("and", _freeze(self.read(left)), _freeze(self.read(right))))
+            self._note(target, ("CCX", _freeze(token), self.epoch_key(firing)))
+            self._xor_into(target, self._under(firing, token))
             return
         if name == "SWAP" and len(op.qubits) == 2:
             left, right = op.qubits
@@ -254,8 +286,7 @@ class ValueMap:
             return payload
         if len(payload.terms) + len(payload.extra) > _CAP:
             return self._fresh_opaque()
-        token = ("when", tuple(sorted(firing)), self.epoch_key(firing), _freeze(payload))
-        return Val(frozenset(), False, frozenset((token,)))
+        return self._token(("when", tuple(sorted(firing)), self.epoch_key(firing), _freeze(payload)))
 
     def _xor_into(self, qubit: int, operand: Val) -> None:
         self._write(qubit, _xor(self.read(qubit), operand, self._fresh_opaque))
@@ -278,8 +309,7 @@ class ValueMap:
         held_left = self.read(left)
         held_right = self.read(right)
         diff = _xor(held_left, held_right, self._fresh_opaque)
-        token = ("and", _freeze(control), _freeze(diff))
-        delta = Val(frozenset(), False, frozenset((token,)))
+        delta = self._token(("and", _freeze(control), _freeze(diff)))
         self._write(left, _xor(held_left, delta, self._fresh_opaque))
         # Re-read right: the opaque collapse of diff does not change it.
         held_right = self.read(right)

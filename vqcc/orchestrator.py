@@ -314,6 +314,10 @@ def _die_with_parent() -> None:
     must not keep running after that.
     """
 
+    # prctl is Linux only (Kaggle and CI). Elsewhere, for example a macOS
+    # checkout running the tests, the child relies on the process-group kill.
+    if not sys.platform.startswith("linux"):
+        return
     libc = ctypes.CDLL(None, use_errno=True)
     # PR_SET_PDEATHSIG = 1
     libc.prctl(1, signal.SIGKILL)

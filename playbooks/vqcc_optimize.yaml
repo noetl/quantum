@@ -11,6 +11,10 @@
 # HTTP 200, valid true, execute_verdict accept, findings empty.
 # GET /api/dsl/version reported server 3.161.2. The validate body omitted
 # server_version. schema digest unchanged.
+# Revalidated 2026-11-17 after transform_budget_s moved to 16200:
+# POST https://noetl.ai/api/dsl/validate HTTP 200, valid true,
+# execute_verdict accept, findings empty. GET /api/dsl/version reported
+# server 3.165.1. schema digest unchanged.
 # schema_digest sha256:25071111774314cbf0c83ee9925b53701c2228232574bda3b13b1e27d58b372c
 # The 2026-11-11 digest was
 # sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be.
@@ -46,9 +50,10 @@ workload:
   # Not a target runtime. VQCC_OPTIMIZE_BUDGET_S overrides it.
   optimize_budget_s: "25200"
   # Each streaming transform (profile, restore, cancel, reuse). When one
-  # exceeds this, that task keeps the unmodified circuit.
-  # VQCC_TRANSFORM_BUDGET_S overrides it.
-  transform_budget_s: "7200"
+  # exceeds this, that task keeps the unmodified circuit. The task share
+  # also caps it, so only dqi can use 16200 s; that leaves 1440 s of dqi's
+  # 17640 s for the official verifier. VQCC_TRANSFORM_BUDGET_S overrides it.
+  transform_budget_s: "16200"
   # Per-task shares of optimize_budget_s. dqi is the large circuit.
   # 3780 + 17640 + 3780 = 25200. VQCC_TASK_BUDGET_S overrides one task.
   invsqrt_budget_s: "3780"

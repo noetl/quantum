@@ -131,7 +131,10 @@ _TASKS = ("invsqrt", "dqi", "dfthcsos")
 # 12-hour kill even when a transform is SIGKILLed after the 60 s grace.
 # Shares: invsqrt 15%, dqi 70%, dfthcsos 15%. 3780 + 17640 + 3780 = 25200.
 DEFAULT_OPTIMIZE_BUDGET_S = 7 * 60 * 60
-DEFAULT_TRANSFORM_BUDGET_S = 2 * 60 * 60
+# One transform may use most of dqi's share. 16200 leaves 1440 s of dqi's
+# 17640 s for the official verifier (about 363 s on Kaggle version 12).
+# invsqrt and dfthcsos are capped by their own 3780 s shares.
+DEFAULT_TRANSFORM_BUDGET_S = 16200
 TASK_BUDGET_SHARE = {"invsqrt": 0.15, "dqi": 0.70, "dfthcsos": 0.15}
 # Cooperative checks run far more often than the old 100_000-gate stride.
 # A full cancellation window is 4096 gates, so this stride cannot hide a
