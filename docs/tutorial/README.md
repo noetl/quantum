@@ -58,7 +58,7 @@ goes from verify to cost. Detail is in [Playbooks](03-playbooks.md).
 
 ## Where the numbers come from
 
-Baseline scores and the version 7 and version 8 outcomes below are taken
+Baseline scores and the version 7, version 8, and version 9 outcomes below are taken
 from the private notebook logs and from the issue comments those logs were
 posted to. They are not measurements made by cloning this repository on a
 machine that has no competition data. Anything this briefing could not

@@ -115,6 +115,6 @@ These came out of the same logs. They are not resolved either.
   packager rejects them (FR-014's neighborhood, and the edge case in the
   spec). Both statements can be true: the verifier is looser than our zip
   check. Do not weaken the packager from this page.
-- Version 9's `structure` report is **pending**. It is not an open formula
-  question. It is the measurement [issue #19](https://github.com/noetl/quantum/issues/19)
-  asked for.
+- Version 9's `structure` report is in [Optimization history](06-history.md)
+  and on [issue #19](https://github.com/noetl/quantum/issues/19#issuecomment-6844754721).
+  It is not an open formula question.
