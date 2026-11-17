@@ -38,9 +38,10 @@ US1, US2, FR-001, FR-002, FR-003.
       verified by the import itself.
 - [x] Structural mode writes a kickmix fixture labeled `structural_fixture`.
 - [ ] Confirm path and SHA-256 recording on a fresh read of a real Kaggle
-      provenance file after version 9. Version 8 imported the baselines
-      (`role: imported_baseline`) but this checklist does not treat that as
-      closing the issue.
+      provenance file. Version 9's evidence names invsqrt `candidate-0.kmb`
+      with sha256 prefix `7e205ced…f9a7`. The full hash is not copied here.
+      Version 8 imported the baselines (`role: imported_baseline`) but this
+      checklist does not treat that as closing the issue.
 
 ## Verifier — issue [#4](https://github.com/noetl/quantum/issues/4), open
 
@@ -53,8 +54,10 @@ US1 scenarios 1 and 2, FR-010, FR-011.
 - [x] Versions 7 and 8 recorded `verifier_status: PASS` and a JSON `score` on
       the reference sample.
 - [ ] The issue stays open until the team accepts a playbook run on `main`
-      against the real data as the close-out. Version 9 is the current
-      candidate and is **pending**.
+      against the real data as the close-out. Version 9 finished: optimize
+      exit 0, run `20261113T015716Z-fea5b448`, verifier `PASS` on invsqrt's
+      retained candidate and on the dqi and dfthcsos baselines. No submission
+      was made. This page does not close the issue.
 
 ## Cost — issue [#5](https://github.com/noetl/quantum/issues/5), open
 
@@ -98,7 +101,8 @@ US3, FR-011, FR-012, FR-013, FR-014, SC-003.
       false. On versions 7 and 8, status was `verified_not_packaged` and
       `zip_written` was false because packaging was not armed.
 - [ ] No submission zip has been produced from an accepted optimize candidate.
-      There is no accepted candidate yet.
+      Version 9 retained invsqrt and the notebook stayed private. No Kaggle
+      submission was made.
 - [ ] The sample's `angle_k_*.kmb` names use an extension. The packager still
       requires extensionless hub names. That is unresolved. Do not "fix" it
       inside a docs change.
@@ -115,9 +119,11 @@ Shipped in [PR #15](https://github.com/noetl/quantum/pull/15), tightened in
 - [x] `tasks/*/generate.py` still writes nothing.
 - [x] A pass that does not lower charged weight or `Q` writes no file.
       Version 8 is the example.
-- [ ] No retained candidate has a strictly lower official score. The issue
-      stays open until one does, or until the team closes it for another
-      stated reason. Version 9 is **pending**.
+- [x] Version 9 retained invsqrt at 2068786.6405086848, strictly below
+      2076774.233715282, verifier `PASS`. dqi and dfthcsos wrote no
+      candidate. Evidence: [issue #9 comment](https://github.com/noetl/quantum/issues/9#issuecomment-6844754839).
+      Issue [#9](https://github.com/noetl/quantum/issues/9) stays open; this
+      box records the invsqrt result.
 
 ## Cost-targeted passes — issue [#17](https://github.com/noetl/quantum/issues/17), open
 
@@ -133,8 +139,11 @@ scope for the code. Shipped in [PR #18](https://github.com/noetl/quantum/pull/18
 - [x] dfthcsos "no candidate" on version 7 is explained: nothing commuted into
       the horizon, and the files have no T or fine `Z_POW`. Version 8 then
       refused the Clifford-only shrink as well.
-- [ ] A Kaggle run that lowers a charged count and keeps a strictly lower
-      PASS score. Not version 8. Version 9 is **pending**.
+- [ ] A Kaggle run of the measurement-uncompute pass that lowers a charged
+      count and keeps a strictly lower PASS score. Version 9 reports
+      `and_uncomputes` 0 on invsqrt, dqi, and dfthcsos. The invsqrt score
+      that moved is the scratch-reuse result under issue
+      [#19](https://github.com/noetl/quantum/issues/19).
 
 ## Structural passes — issue [#19](https://github.com/noetl/quantum/issues/19), open
 
@@ -147,10 +156,14 @@ not edited. Shipped in [PR #20](https://github.com/noetl/quantum/pull/20).
 - [x] DSL validation of both playbooks was recorded on 2026-11-12, server
       3.156.2, digest `sha256:29b2831fdd2444fab0bbc8915283a22ac86532393111f3a3cdad782bf6b1c4be`.
       This tutorial does not re-validate them because it does not edit them.
-- [ ] The Kaggle `structure` report for the sample files. That is version 9,
-      **pending**.
-- [ ] A retained candidate with a strictly lower official score, if the
-      profile shows something the passes can cut. No such score is claimed.
+- [x] The Kaggle `structure` report for the sample files is version 9,
+      run `20261113T015716Z-fea5b448`. Input-circuit counts are in
+      [History](06-history.md). Evidence: [issue #19 comment](https://github.com/noetl/quantum/issues/19#issuecomment-6844754721).
+- [x] invsqrt's retained score 2068786.6405086848 is strictly lower.
+      `reuse_headroom_vs_header` was 1 and Q went 260 → 259. Shared-control
+      factoring applied 0 times. dqi (832 shared-control candidates, 222
+      matching uncompute pairs, headroom 0) and dfthcsos (0 / 0 / headroom 0,
+      per file) wrote no candidate.
 
 ## Explicitly not a deliverable until someone asks
 
