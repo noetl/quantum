@@ -30,7 +30,7 @@ page shows). The companion paper is
 | --- | --- | --- | --- |
 | `invsqrt` | Reversible `1/√x` for a Coulomb phase | `invsqrt.kmb` or `.kmx` | `Q × (Toffoli + T/4)` |
 | `dqi` | Coherent Reed–Solomon decode over `GF(2^12)` | `dqi.kmb` or `.kmx` | `R(ε⁺) × Q² × T` |
-| `dfthcsos` | Block encoding of a DF/THC chemistry Hamiltonian | `dfthcsos/angle_k_0..N` and `submission.npz` | `λ_eff × T × Q` |
+| `dfthcsos` | Block encoding of a DF/THC chemistry Hamiltonian | `dfthcsos/angle_k_0..N.kmb` and `submission.npz` | `λ_eff × T × Q` |
 
 **invsqrt** agrees across the hub and the paper:
 
@@ -86,7 +86,7 @@ fills in a leaderboard score.
 ```text
 invsqrt.kmb or invsqrt.kmx
 dqi.kmb or dqi.kmx
-dfthcsos/angle_k_0 .. angle_k_N    # no gaps
+dfthcsos/angle_k_0.kmb .. angle_k_N.kmb    # or all .kmx; no gaps
 dfthcsos/submission.npz            # U, W, H2_I, H1_I, Hsym_lower, tree_edges
 ```
 
