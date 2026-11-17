@@ -150,13 +150,17 @@ The same steps without the `noetl` binary, including a single task:
 python3 kaggle/vqcc_optimize.py --task invsqrt --seed 20261108
 ```
 
-The optimize phase defaults to 32400 s (9 hours) for all three tasks
+The optimize phase defaults to 25200 s (7 hours) for all three tasks
 together (`--optimize-budget-s`, or `VQCC_OPTIMIZE_BUDGET_S`). The shares
-are invsqrt 4860 s, dqi 22680 s, and dfthcsos 4860 s. `--time-budget-s`
-(or `VQCC_TASK_BUDGET_S`) replaces one task's share. `--transform-budget-s`
+are invsqrt 3780 s, dqi 17640 s, and dfthcsos 3780 s. `--time-budget-s`
+(or `VQCC_TASK_BUDGET_S`) replaces one task's share. The environment
+variable wins over the flag the playbook passes. `--transform-budget-s`
 (or `VQCC_TRANSFORM_BUDGET_S`) defaults to 7200 s for each of `profile`,
-`restore`, `cancel`, and `reuse`. When that cap trips, the task keeps the
-unmodified circuit and later steps still run. `--memory-budget-bytes`
+`restore`, `cancel`, and `reuse`. The shares come off one absolute
+deadline, so a task that starts late only gets the time still left. The
+transform runs in a child process that is killed (SIGTERM, then SIGKILL
+after 60 s) when that deadline passes. Status `timeout` keeps the previous
+artifact. Later steps still run. `--memory-budget-bytes`
 defaults to 2147483648. `--window` defaults to 4096 (the cancellation horizon;
 Z-rotation merging is not limited by it). `--max-candidates` defaults
 to 1 and cannot be set above 3.

@@ -9,11 +9,14 @@ confirmed.
 
 from __future__ import annotations
 
+import argparse
+import ctypes
 import hashlib
 import json
 import math
 import os
 import shutil
+import signal
 import sys
 import subprocess
 import time
@@ -21,7 +24,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vqcc.kickmix_file import KickmixFormatError, OptimizeBudgetError
+from vqcc.kickmix_file import OptimizeBudgetError
+from vqcc.optimize import ProgressLog
 from vqcc.official_verifier import (
     DEFAULT_TIMEOUT_S,
     REFERENCE_SEED,
@@ -292,6 +296,298 @@ def _env_seconds(name: str) -> float | None:
     return value
 
 
+def _kill_after_seconds() -> float:
+    raw = os.environ.get("VQCC_KILL_AFTER_S", "60").strip() or "60"
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise PipelineError("VQCC_KILL_AFTER_S must be a number of seconds") from exc
+    if value < 0:
+        raise PipelineError("VQCC_KILL_AFTER_S must be non-negative")
+    return value
+
+
+def _die_with_parent() -> None:
+    """Ask Linux to SIGKILL this process when its parent dies.
+
+    The playbook's ``timeout`` kills the optimize step. The transform child
+    must not keep running after that.
+    """
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    # PR_SET_PDEATHSIG = 1
+    libc.prctl(1, signal.SIGKILL)
+
+
+def _signal_group(pid: int, sig: int) -> None:
+    try:
+        os.killpg(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+
+def _kill_process(proc: subprocess.Popen, kill_after: float) -> int:
+    """SIGTERM, then SIGKILL after ``kill_after`` seconds. Returns the exit code."""
+
+    _signal_group(proc.pid, signal.SIGTERM)
+    try:
+        return proc.wait(timeout=max(0.1, kill_after))
+    except subprocess.TimeoutExpired:
+        _signal_group(proc.pid, signal.SIGKILL)
+        return proc.wait(timeout=30)
+
+
+def _optimize_paths(runs_root: Path, run_dir: Path, task: str) -> dict[str, Path]:
+    logs = run_dir / "optimize"
+    return {
+        "task_log": logs / f"{task}.log",
+        "progress_log": runs_root / "optimize-progress.log",
+        "profile": logs / f"{task}.profile.json",
+        "result": logs / f"{task}.transform.json",
+    }
+
+
+def _append_progress(paths: list[Path], line: str) -> None:
+    if not line.endswith("\n"):
+        line += "\n"
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", buffering=1) as handle:
+            handle.write(line)
+            handle.flush()
+
+
+def _note_timeout(runs_root: Path, run_dir: Path, task: str) -> None:
+    paths = _optimize_paths(runs_root, run_dir, task)
+    _append_progress(
+        [paths["task_log"], paths["progress_log"]],
+        _timeout_line(task, "timeout"),
+    )
+
+
+def _timeout_line(task: str, phase: str) -> str:
+    return (
+        f"progress task={task} phase={phase} gates=- elapsed_s=- remaining_s=0 "
+        f"candidates=- eligible=- control_mutated=-\n"
+    )
+
+
+def run_optimize_transform(args: argparse.Namespace) -> int:
+    """Child process: one streaming transform, killed by its parent at the deadline."""
+
+    if os.environ.get("VQCC_SPIN_UNTIL_KILLED") == "1":
+        # Deliberately ignore the cooperative deadline and SIGTERM. The parent
+        # must SIGKILL this process. Used by the deadline test only.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGALRM, signal.SIG_IGN)
+        while True:
+            time.sleep(3600)
+
+    deadline_epoch = float(args.deadline_epoch)
+    remaining = deadline_epoch - time.time()
+    seconds = min(remaining, float(args.transform_budget_s))
+    result_path = Path(args.result)
+    log_paths = [path for path in (args.log or []) if path]
+    progress = ProgressLog(log_paths, args.task, deadline=time.monotonic() + max(0.0, seconds))
+
+    def finish(status: str, reason: str, rewrite=None, code: int = 0) -> int:
+        payload = {
+            "status": status,
+            "reason": reason,
+            "wrote": bool(rewrite.wrote) if rewrite is not None else False,
+            "before": getattr(rewrite, "before", {}) or {},
+            "after": getattr(rewrite, "after", {}) or {},
+            "stats": getattr(rewrite, "stats", {}) or {},
+            "profile": getattr(rewrite, "profile", {}) or {},
+        }
+        _atomic_json(result_path, payload)
+        progress.close()
+        return code
+
+    if seconds <= 0:
+        progress.emit("timeout", 0)
+        return finish(
+            "timeout",
+            "time budget exhausted. The unmodified circuit for this task was kept.",
+            code=124,
+        )
+
+    def _on_signal(signum, frame):
+        raise OptimizeBudgetError(
+            "time budget exhausted. The unmodified circuit for this task was kept."
+        )
+
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGALRM, _on_signal)
+    signal.alarm(max(1, int(seconds)))
+    repo_root = Path(args.repo_root)
+    runs_root = Path(args.runs_root)
+    profile_path = Path(args.profile)
+
+    def on_checkpoint(phase: str, gates: int, profiler) -> None:
+        partial = {
+            "phase": phase,
+            "gates": gates,
+            "partial": True,
+            "not_a_score": True,
+        }
+        if profiler is not None:
+            partial["match"] = profiler.match_counts()
+        _atomic_json(profile_path, partial)
+        try:
+            state, run_dir = _load(repo_root, runs_root)
+        except PipelineError:
+            return
+        task_state = state["tasks"].setdefault(
+            args.task,
+            {"role": "absent", "circuit_written": False, "competition_verified": False},
+        )
+        optimization = dict(task_state.get("optimization") or {})
+        optimization["phase"] = phase
+        optimization["gates"] = gates
+        optimization["structure_partial"] = partial
+        optimization["leaderboard_score"] = None
+        task_state["optimization"] = optimization
+        state["tasks"][args.task] = task_state
+        _save(run_dir, state)
+
+    try:
+        rewrite = optimize_artifact(
+            args.src,
+            args.dst,
+            window=int(args.window),
+            memory_budget_bytes=int(args.memory_budget_bytes),
+            deadline=time.monotonic() + seconds,
+            transform_budget_s=seconds,
+            task=args.task,
+            progress=progress,
+            on_checkpoint=on_checkpoint,
+        )
+    except OptimizeBudgetError as exc:
+        text = str(exc)
+        _delete_path(Path(args.dst))
+        if "time budget" in text:
+            progress.emit("timeout", 0)
+            return finish("timeout", text, code=124)
+        progress.emit("error", 0)
+        return finish("error", text, code=1)
+    except Exception as exc:
+        progress.emit("error", 0)
+        _delete_path(Path(args.dst))
+        return finish("error", str(exc), code=1)
+    return finish("ok", rewrite.reason, rewrite, code=0)
+
+
+def _supervise_transform(
+    repo_root: Path,
+    runs_root: Path,
+    run_dir: Path,
+    task: str,
+    src: Path,
+    dst: Path,
+    *,
+    window: int,
+    memory_budget_bytes: int,
+    deadline_epoch: float,
+    transform_budget_s: float,
+) -> tuple[str, object | None]:
+    """Run the streaming transform in a child. Kill it at the deadline.
+
+    Returns ``("ok", rewrite)``, ``("timeout", None)``, or ``("error", message)``.
+    """
+
+    paths = _optimize_paths(runs_root, run_dir, task)
+    for path in (paths["task_log"], paths["progress_log"], paths["result"], paths["profile"]):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    remaining = deadline_epoch - time.time()
+    wait_s = min(max(0.0, remaining), float(transform_budget_s))
+    if wait_s <= 0:
+        _append_progress(
+            [paths["task_log"], paths["progress_log"]],
+            _timeout_line(task, "timeout"),
+        )
+        return "timeout", None
+    cmd = [
+        sys.executable,
+        "-m",
+        "vqcc.pipeline",
+        "optimize-transform",
+        "--task",
+        task,
+        "--src",
+        str(src),
+        "--dst",
+        str(dst),
+        "--window",
+        str(window),
+        "--memory-budget-bytes",
+        str(memory_budget_bytes),
+        "--deadline-epoch",
+        str(deadline_epoch),
+        "--transform-budget-s",
+        str(transform_budget_s),
+        "--repo-root",
+        str(repo_root),
+        "--runs-root",
+        str(runs_root),
+        "--result",
+        str(paths["result"]),
+        "--profile",
+        str(paths["profile"]),
+        "--log",
+        str(paths["task_log"]),
+        "--log",
+        str(paths["progress_log"]),
+    ]
+    log_handle = paths["task_log"].open("a", encoding="utf-8", buffering=1)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=log_handle,
+        stderr=log_handle,
+        start_new_session=True,
+        preexec_fn=_die_with_parent,
+    )
+    kill_after = _kill_after_seconds()
+    try:
+        code = proc.wait(timeout=wait_s)
+    except subprocess.TimeoutExpired:
+        code = _kill_process(proc, kill_after)
+    finally:
+        log_handle.close()
+    timed_out = code in {124, 137, -signal.SIGTERM, -signal.SIGKILL} or code < 0
+    payload = None
+    if paths["result"].is_file():
+        try:
+            payload = json.loads(paths["result"].read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = None
+    if payload and payload.get("status") == "timeout":
+        timed_out = True
+    if payload and payload.get("status") == "ok" and code == 0 and not timed_out:
+        from types import SimpleNamespace
+
+        rewrite = SimpleNamespace(
+            wrote=bool(payload.get("wrote")),
+            reason=payload.get("reason") or "",
+            before=payload.get("before") or {},
+            after=payload.get("after") or {},
+            stats=payload.get("stats") or {},
+            profile=payload.get("profile") or {},
+        )
+        return "ok", rewrite
+    _delete_path(dst)
+    if payload and payload.get("status") == "error" and not timed_out:
+        return "error", payload.get("reason") or "transform failed"
+    _append_progress(
+        [paths["task_log"], paths["progress_log"]],
+        _timeout_line(task, "timeout"),
+    )
+    return "timeout", None
+
+
 def optimize_task(
     repo_root: Path,
     runs_root: Path,
@@ -328,16 +624,24 @@ def optimize_task(
         raise PipelineError("optimize budget must be non-negative")
 
     state, run_dir = _load(repo_root, runs_root)
-    overall = optimize_budget_s
-    if overall is None:
-        overall = _env_seconds("VQCC_OPTIMIZE_BUDGET_S")
-    if overall is None:
+    # Environment overrides the playbook flags. The playbook passes its
+    # workload defaults on the command line; a notebook or a test sets
+    # VQCC_OPTIMIZE_BUDGET_S / VQCC_TASK_BUDGET_S / VQCC_TRANSFORM_BUDGET_S
+    # without editing the YAML.
+    env_overall = _env_seconds("VQCC_OPTIMIZE_BUDGET_S")
+    if env_overall is not None:
+        overall = env_overall
+    elif optimize_budget_s is not None:
+        overall = optimize_budget_s
+    else:
         overall = DEFAULT_OPTIMIZE_BUDGET_S
-    if time_budget_s is None:
-        time_budget_s = _env_seconds("VQCC_TASK_BUDGET_S")
-    if transform_budget_s is None:
-        transform_budget_s = _env_seconds("VQCC_TRANSFORM_BUDGET_S")
-    if transform_budget_s is None:
+    env_task = _env_seconds("VQCC_TASK_BUDGET_S")
+    if env_task is not None:
+        time_budget_s = env_task
+    env_transform = _env_seconds("VQCC_TRANSFORM_BUDGET_S")
+    if env_transform is not None:
+        transform_budget_s = env_transform
+    elif transform_budget_s is None:
         transform_budget_s = DEFAULT_TRANSFORM_BUDGET_S
     now = time.time()
     clock = state.get("optimize_clock")
@@ -372,6 +676,9 @@ def optimize_task(
         return _step("optimize", state, **summary)
 
     source = _task_circuit_path(state["tasks"].get(task) or {})
+    synthetic = os.environ.get("VQCC_SYNTHETIC_CIRCUIT", "").strip()
+    if source is None and synthetic and Path(synthetic).is_file():
+        source = Path(synthetic)
     if source is None:
         summary.update(
             status="blocked",
@@ -394,27 +701,45 @@ def optimize_task(
         verify_timeout_s,
     )
     verification = (state["tasks"].get(task) or {}).get("verification") or {}
-    if not verification.get("competition_verified") or not verification.get("cost_authoritative"):
+    synthetic = os.environ.get("VQCC_SYNTHETIC_CIRCUIT", "").strip()
+    drill = False
+    authoritative = bool(
+        verification.get("competition_verified") and verification.get("cost_authoritative")
+    )
+    if not authoritative:
         out_of_time = time.monotonic() + 1 >= deadline
-        summary.update(
-            status="budget" if out_of_time else "blocked",
-            circuit_written=False,
-            baseline_verification_status=verification.get("status"),
-            reason=(
-                "Time budget exhausted before an authoritative baseline pass. "
-                "No candidate was written."
-                if out_of_time
-                else (
-                    "The baseline is not an authoritative verifier pass (FR-004, FR-011). "
+        synthetic_path = Path(synthetic) if synthetic else None
+        if synthetic_path is not None and synthetic_path.is_file() and not out_of_time:
+            # Deadline drill only. The file is not a verifier pass, so nothing
+            # it produces is retained (FR-004, FR-011).
+            drill = True
+            source = synthetic_path
+        else:
+            summary.update(
+                status="timeout" if out_of_time else "blocked",
+                circuit_written=False,
+                baseline_verification_status=verification.get("status"),
+                reason=(
+                    "Time budget exhausted before an authoritative baseline pass. "
                     "No candidate was written."
-                )
-            ),
-        )
-        _store_optimization(state, run_dir, task, summary)
-        return _step("optimize", state, **summary)
+                    if out_of_time
+                    else (
+                        "The baseline is not an authoritative verifier pass (FR-004, FR-011). "
+                        "No candidate was written."
+                    )
+                ),
+            )
+            if out_of_time:
+                _note_timeout(runs_root, run_dir, task)
+            _store_optimization(state, run_dir, task, summary)
+            return _step("optimize", state, **summary)
 
-    baseline_cost = float(verification["parsed_cost"])
-    best_cost = baseline_cost
+    if drill:
+        baseline_cost = None
+        best_cost = None
+    else:
+        baseline_cost = float(verification["parsed_cost"])
+        best_cost = baseline_cost
     retained = source
     attempts: list[dict] = []
     written = 0
@@ -430,51 +755,66 @@ def optimize_task(
     for index in range(max_candidates):
         remaining = deadline - time.monotonic()
         if remaining <= 1:
+            _note_timeout(runs_root, run_dir, task)
             attempts.append(
                 {
-                    "status": "budget",
+                    "status": "timeout",
                     "proposal_retained": False,
                     "reason": "time budget exhausted. No further candidate was written.",
                 }
             )
             break
         proposal = _proposal_path(run_dir, task, index, retained)
-        try:
-            rewrite = optimize_artifact(
-                str(retained),
-                str(proposal),
-                window=window,
-                memory_budget_bytes=memory_budget_bytes,
-                deadline=time.monotonic() + remaining,
-                transform_budget_s=transform_budget_s,
-                task=task,
-            )
-        except (KickmixFormatError, OptimizeBudgetError) as exc:
-            _delete_path(proposal)
-            timed_out = "time budget" in str(exc)
-            if timed_out:
-                print(
-                    f"progress task={task} transforms=profile,restore,cancel,reuse "
-                    "event=budget_fallback",
-                    file=sys.stderr,
-                    flush=True,
-                )
+        kind, rewrite = _supervise_transform(
+            repo_root,
+            runs_root,
+            run_dir,
+            task,
+            Path(retained),
+            proposal,
+            window=window,
+            memory_budget_bytes=memory_budget_bytes,
+            deadline_epoch=float(state["optimize_clock"]["deadline_epoch"]),
+            transform_budget_s=min(transform_budget_s, remaining),
+        )
+        if kind == "timeout":
             attempts.append(
                 {
-                    "status": "budget" if timed_out else "not_rewritten",
+                    "status": "timeout",
                     "proposal_retained": False,
-                    "reason": f"{exc} The previous artifact was kept.",
+                    "reason": (
+                        "time budget exhausted. The unmodified circuit for this task was kept."
+                    ),
+                    "structure_partial": _partial_structure(repo_root, runs_root, task),
+                }
+            )
+            break
+        if kind == "error" or rewrite is None:
+            attempts.append(
+                {
+                    "status": "not_rewritten",
+                    "proposal_retained": False,
+                    "reason": f"{rewrite} The previous artifact was kept.",
                 }
             )
             break
         if rewrite.profile:
             summary["structure"] = rewrite.profile
-        if not rewrite.wrote:
+        if not rewrite.wrote or drill:
+            _delete_path(proposal)
             attempts.append(
                 {
                     "status": "unchanged",
                     "proposal_retained": False,
-                    "reason": rewrite.reason,
+                    "reason": (
+                        rewrite.reason
+                        if not drill
+                        else (
+                            "Synthetic deadline drill. The rewrite was not retained: "
+                            "there is no official verifier pass (FR-004, FR-011). "
+                            + (rewrite.reason or "")
+                        )
+                    ),
                     "before": rewrite.before,
                     "after": rewrite.after,
                     "stats": rewrite.stats,
@@ -489,7 +829,7 @@ def optimize_task(
             written -= 1
             attempts.append(
                 {
-                    "status": "budget",
+                    "status": "timeout",
                     "proposal_retained": False,
                     "reason": (
                         "time budget exhausted before the verifier. "
@@ -560,14 +900,19 @@ def optimize_task(
         status = "accepted"
     elif any(item.get("status") == "rejected" for item in attempts):
         status = "rejected"
-    elif any(item.get("status") == "budget" for item in attempts):
-        status = "budget"
+    elif any(item.get("status") == "timeout" for item in attempts):
+        status = "timeout"
     elif any(item.get("status") == "blocked" for item in attempts):
         status = "blocked"
     elif any(item.get("status") == "not_rewritten" for item in attempts):
         status = "not_rewritten"
     else:
         status = "unchanged"
+    for item in attempts:
+        if item.get("structure"):
+            summary["structure"] = item["structure"]
+        elif item.get("structure_partial"):
+            summary["structure"] = item["structure_partial"]
     summary.update(
         status=status,
         circuit_written=accepted > 0,
@@ -1079,6 +1424,47 @@ def _delete_path(path: Path) -> None:
         shutil.rmtree(partial)
 
 
+def _partial_structure(repo_root: Path, runs_root: Path, task: str):
+    try:
+        state, _run_dir = _load(repo_root, runs_root)
+    except PipelineError:
+        return None
+    optimization = (state["tasks"].get(task) or {}).get("optimization") or {}
+    return optimization.get("structure_partial")
+
+
+def mark_timeout(repo_root: Path, runs_root: Path, task: str) -> dict:
+    """Record a hard kill when the shell ``timeout`` stopped the optimize step."""
+
+    if task not in TASKS:
+        raise PipelineError(f"unknown task {task}")
+    state, run_dir = _load(repo_root, runs_root)
+    task_state = state["tasks"].setdefault(
+        task,
+        {"role": "absent", "circuit_written": False, "competition_verified": False},
+    )
+    optimization = dict(task_state.get("optimization") or {})
+    if optimization.get("status") not in {"accepted", "rejected", "unchanged", "timeout", "skipped"}:
+        optimization["status"] = "timeout"
+        optimization["circuit_written"] = False
+        optimization["leaderboard_score"] = None
+        optimization["task"] = task
+        optimization["reason"] = (
+            "The optimize step was killed at its deadline. The previous artifact was kept."
+        )
+        task_state["optimization"] = optimization
+        state["tasks"][task] = task_state
+        _save(run_dir, state)
+        paths = _optimize_paths(runs_root, run_dir, task)
+        _append_progress(
+            [paths["task_log"], paths["progress_log"]],
+            _timeout_line(task, "timeout"),
+        )
+    else:
+        optimization = task_state.get("optimization") or optimization
+    return _step("optimize", state, **optimization)
+
+
 def _optimize_reason(status: str) -> str:
     reasons = {
         "accepted": (
@@ -1092,6 +1478,10 @@ def _optimize_reason(status: str) -> str:
         "unchanged": (
             "The rewrite did not lower the charged gate weight or the qubit count. "
             "No candidate was written."
+        ),
+        "timeout": (
+            "The time budget killed this task. The previous artifact was kept "
+            "and later pipeline steps still run."
         ),
         "budget": "The time budget stopped the loop before a candidate could be retained.",
         "blocked": "Optimization did not run to a retained candidate.",
@@ -1335,10 +1725,22 @@ def _load(repo_root: Path, runs_root: Path) -> tuple[dict, Path]:
 
 
 def _save(run_dir: Path, state: dict) -> None:
-    (run_dir / "state.json").write_text(
+    """Replace state.json atomically so a kill keeps the previous document."""
+
+    target = run_dir / "state.json"
+    temporary = run_dir / "state.json.tmp"
+    temporary.write_text(
         json.dumps(state, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    os.replace(temporary, target)
+
+
+def _atomic_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _step(name: str, state: dict, **payload) -> dict:

@@ -91,12 +91,13 @@ class MatcherScaleTests(unittest.TestCase):
         self.assertEqual(shared["control_mutated"], 0)
         self.assertEqual(mutation["SWAP"]["relabelled"], 1)
 
-    def test_task_shares_sum_to_the_nine_hour_budget(self) -> None:
+    def test_task_shares_sum_to_the_seven_hour_budget(self) -> None:
         shares = [task_budget_seconds(task, DEFAULT_OPTIMIZE_BUDGET_S) for task in TASK_BUDGET_SHARE]
         self.assertEqual(sum(shares), DEFAULT_OPTIMIZE_BUDGET_S)
-        self.assertEqual(task_budget_seconds("dqi", DEFAULT_OPTIMIZE_BUDGET_S), 22680)
-        self.assertEqual(task_budget_seconds("invsqrt", DEFAULT_OPTIMIZE_BUDGET_S), 4860)
-        self.assertEqual(task_budget_seconds("dfthcsos", DEFAULT_OPTIMIZE_BUDGET_S), 4860)
+        self.assertEqual(DEFAULT_OPTIMIZE_BUDGET_S, 25200)
+        self.assertEqual(task_budget_seconds("dqi", DEFAULT_OPTIMIZE_BUDGET_S), 17640)
+        self.assertEqual(task_budget_seconds("invsqrt", DEFAULT_OPTIMIZE_BUDGET_S), 3780)
+        self.assertEqual(task_budget_seconds("dfthcsos", DEFAULT_OPTIMIZE_BUDGET_S), 3780)
 
     def test_expired_budget_keeps_the_source(self) -> None:
         import kickmix

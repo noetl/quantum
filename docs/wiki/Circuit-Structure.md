@@ -264,3 +264,34 @@ the same. Small circuits for each pattern were checked by enumerating every
 input and comparing the kickmix qubit vector and, where the circuit does
 not measure, the shot phase. That is not a dqi score. Retention is still
 verifier `PASS` and a strictly lower JSON `score`.
+
+## Version 12 ran past its deadline
+
+Kaggle version 12 (scriptVersionId 369303709, main `513ad76`) was killed at
+the 12-hour limit, about 2.5 hours after the 9-hour optimize deadline. No
+optimize progress was stored. `opt.log` held only noetl's `runtime: local`
+line, because noetl 5.3.2 local runtime returns a shell step's stdout and
+stderr when the step exits, and the step never exited.
+
+The loop that ran through that deadline is the cancellation window in
+`_Hold._match_last`. It walked every earlier gate in the 4096-gate horizon
+that shared a qubit and commuted, on every gate, including when no inverse
+partner was in the window. dqi is about 86 million gates and about 53.9
+million of them are `CX`. `CX` gates that share a target commute, so a run
+of them fills the horizon and every new gate scanned the whole horizon.
+A local measurement of that shape, before this change, took 81.3 s for
+20,000 gates (246 gates/s) and 25.9 s for 8,000 gates. The cooperative
+check ran only once per 100,000 gates, so one unchecked stretch was many
+minutes, and a heavier mix (profile, value tracking, and `CCX` commute
+checks, which allocate sets) is slower still. Nothing was flushed until
+the step ended, so the Kaggle kill left no optimize evidence.
+
+The scan now looks up a cancel or overwrite partner by key and walks the
+horizon only when a partner is still inside it, and only as far as that
+partner. The same 20,000-gate measurement then took 0.037 s (about 545,000
+gates/s), and 100,000 gates took 0.231 s. A 496,626-gate dqi-shaped file
+(857 live ANDs, then `CX` and paired `SWAP`) streamed in 23.8 s. The
+deadline is also enforced by killing that process: SIGTERM, then SIGKILL
+after 60 s. Progress lines are flushed to
+`runs/<run_id>/optimize/<task>.log` and `runs/optimize-progress.log` at
+each phase and at least every 60 s.
