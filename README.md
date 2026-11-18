@@ -124,7 +124,10 @@ Kaggle.
 ## Run the baseline
 
 Tested with Python 3.12, `noetl==5.3.2`, and `kickmix==1.0.0` (public
-Apache-2.0 Qualtran package, not the Kaggle image binary).
+Apache-2.0 Qualtran package, not the Kaggle image binary). `noetl==5.3.2` is
+the PyPI wheel over the Rust CLI (noetl/cli tag `v5.3.2`). The tag
+`pypi-v5.3.2` on noetl/noetl only holds its build recipe; see
+[docs/tutorial/01-environment.md](docs/tutorial/01-environment.md#which-noetl-build-this-is).
 
 ```bash
 python3 -m pip install -r requirements-baseline.txt

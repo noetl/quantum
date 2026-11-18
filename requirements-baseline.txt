@@ -1,5 +1,12 @@
 # Pinned to the versions executed for the baseline in this repository.
-# noetl 5.3.2 local runtime (kind: shell / cmds). kickmix 1.0.0 is the public
+# noetl 5.3.2 local runtime (kind: shell / cmds).
+# noetl==5.3.2 is the PyPI wheel (PyO3/maturin, abi3) over the Rust CLI crate
+# `noetl` 5.3.2. It is built from packaging/pypi/ at noetl/noetl tag
+# pypi-v5.3.2 (f562374); the CLI source is noetl/cli tag v5.3.2 (5ff491e).
+# The root pyproject.toml at that tag is NOT a distribution (it says version
+# 4.26.2). Never `pip install` from a noetl/noetl checkout; install from PyPI.
+# See docs/tutorial/01-environment.md, "Which NoETL build this is".
+# kickmix 1.0.0 is the public
 # Apache-2.0 package from Qualtran, not the Kaggle competition image binary.
 noetl==5.3.2
 kickmix==1.0.0

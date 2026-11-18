@@ -39,6 +39,11 @@ Each round:
   `score` is strictly lower. Never claim a score that a Kaggle run did not
   measure.
 
+- NoETL "5.3.2" means the PyPI wheel `noetl==5.3.2` (Rust CLI, noetl/cli tag
+  `v5.3.2`). The noetl/noetl tag `pypi-v5.3.2` is only its build recipe; that
+  tag's root `pyproject.toml` is not a distribution. Never `pip install` from a
+  noetl/noetl checkout. Details in `docs/tutorial/01-environment.md`.
+
 ## Scoring (lower is better)
 
 | Task | Formula | Current best | Source |

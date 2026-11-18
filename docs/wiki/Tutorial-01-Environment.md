@@ -12,7 +12,7 @@ wiki record, not a newer release.
 | Piece | Version | Role |
 | --- | --- | --- |
 | Python | 3.12 in CI (`.github/workflows/ci.yml`) | Adapters, formulas, packaging. The version 8 notebook log shows the Kaggle image on Python 3.13, installing the same requirements file. |
-| NoETL CLI | 5.3.2 | Local playbook runtime. `apiVersion: noetl.io/v2`. |
+| NoETL CLI | 5.3.2: PyPI `noetl==5.3.2` (Rust CLI wheel) | Local playbook runtime. `apiVersion: noetl.io/v2`. Exact build below. |
 | kickmix | 1.0.0 | Public Apache-2.0 Qualtran package. Builds and measures `.kmx` / `.kmb`. This is not `kickmix.so` from the Kaggle image. |
 | PyYAML | `>=6.0.3` | Playbook parsing. The Kaggle image already has it. |
 
@@ -36,6 +36,26 @@ outcome. It is not a pass. The CI job `cli-default` runs
 `noetl run ... --set mode=structural` writes labeled kickmix fixtures under
 git-ignored `runs/`. `competition_verified` stays false. Those files are not
 a submission.
+
+## Which NoETL build this is
+
+"NoETL 5.3.2" in this repository means one thing: the PyPI distribution
+`noetl==5.3.2`, uploaded 2026-10-17. It is a compiled wheel (PyO3, built with
+maturin, `abi3`) that wraps the Rust CLI crate `noetl` 5.3.2 and has no Python
+dependencies. `noetl --version` prints `noetl 5.3.2`.
+
+| What | Identifier |
+| --- | --- |
+| Install | `pip install noetl==5.3.2` (pinned in `requirements-baseline.txt`) |
+| Kaggle wheel (version 14 log) | `noetl-5.3.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`, sha256 `e8676b00e5b012508c19a4db1695bff55607abbfd74fd0117c3c6736bf0c022d` |
+| macOS arm64 wheel | `noetl-5.3.2-cp39-abi3-macosx_11_0_arm64.whl`, sha256 `7b1fb3d3bb24ef497e8584d6ddbad9135d9a2ddde60ca9eec6b9f9bda5003e48` |
+| Wheel build recipe | `packaging/pypi/` at [noetl/noetl tag `pypi-v5.3.2`](https://github.com/noetl/noetl/tree/pypi-v5.3.2/packaging/pypi) (`f562374`), built by `.github/workflows/pypi.yml` |
+| CLI source | [noetl/cli tag `v5.3.2`](https://github.com/noetl/cli/tree/v5.3.2) (`5ff491e`), the crate `noetl` 5.3.2 on crates.io |
+
+The tag `pypi-v5.3.2` is a release tag for the wheel, not a Python source
+package. Its root `pyproject.toml` says it is not a distribution and carries an
+unrelated version (4.26.2). `pip install .` from that checkout would build an
+empty `noetl` wheel that shadows the CLI. Always install from PyPI.
 
 ## What the 5.3.2 local runtime actually executes
 
