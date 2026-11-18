@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,6 +170,95 @@ class RewriteSimulationTests(unittest.TestCase):
         self.assertEqual(result.stats["shared_control_factors"], 1)
         self.assertLess(result.after["toffoli_like"], result.before["toffoli_like"])
         _assert_same_shots(self, kickmix, original, optimized, inputs=2, flag=True)
+
+    def test_delayed_del_and_stays_inside_its_condition_scope(self) -> None:
+        """Kaggle version 14 dqi FAIL: phase_errors 50948/102400, value_errors 0.
+
+        The tracker delayed this HMR/CZ pair and emitted it after
+        POP_CONDITION. With b0 = 0 the HMR then fired on a |0> ancilla,
+        drew a random bit, and the CZ flipped the phase when q0 = q1 = 1.
+        """
+
+        kickmix = _kickmix()
+        text = _named_prefix(2) + "\n".join(
+            [
+                "PUSH_CONDITION if b0",
+                "CCX q0 q1 q2",
+                "CX q2 q3",
+                "CX q2 q3",
+                "HMR q2 b1",
+                "CZ q0 q1 if b1",
+                "POP_CONDITION",
+                "X q4",
+                "X q4",
+                "",
+            ]
+        )
+        from vqcc import optimize as optimize_module
+
+        with mock.patch.object(optimize_module, "should_materialize", return_value=True):
+            original, optimized, result = _optimize_text(kickmix, text)
+        self.assertTrue(result.wrote, result.reason)
+        lines = [line.split()[0] for line in str(optimized).splitlines() if line.strip()]
+        pop = lines.index("POP_CONDITION")
+        self.assertLess(lines.index("HMR"), pop, str(optimized))
+        self.assertLess(lines.index("CZ"), pop, str(optimized))
+        for circuit in (original, optimized):
+            for flag in (0, 1):
+                phases = _phases(kickmix, circuit, [1, 1], flag, shots=_SHOTS)
+                self.assertEqual(phases, {"0"}, (str(circuit), flag))
+
+    def test_del_and_chain_on_one_bit_keeps_its_order(self) -> None:
+        """The Kaggle version 14 dqi FAIL, shrunk.
+
+        dqi uncomputes AND chains in reverse on one measurement bit. The
+        tracker held the second HMR without a conflict check, so the first
+        pair was delayed past it. Its CZ then read a control that the second
+        HMR had already reset, and a bit it had overwritten.
+        """
+
+        self._assert_equivalent(
+            _named_prefix(3)
+            + "CCX q2 q0 q3\nCCX q3 q2 q7\nHMR q7 b1\nCZ q3 q2 if b1\n"
+            + "HMR q3 b1\nCZ q2 q0 if b1\nSWAP q6 q0\n",
+            named=3,
+            bits=2,
+        )
+
+    def test_conditional_reset_is_not_a_clean_proof(self) -> None:
+        """HMR under PUSH_CONDITION does not reset the qubit when b0 = 0."""
+
+        self._assert_equivalent(
+            _named_prefix(4)
+            + "CX q0 q5\nPUSH_CONDITION if b0\nHMR q5 b1\nPOP_CONDITION\n"
+            + "CCX q1 q2 q5\nCCX q1 q2 q3\n",
+            named=4,
+            bits=2,
+        )
+
+    def test_swap_with_named_qubit_is_not_a_clean_proof(self) -> None:
+        """After SWAP the scratch id holds the named qubit's unknown value."""
+
+        self._assert_equivalent(
+            _named_prefix(4) + "SWAP q0 q5\nCCX q1 q2 q5\nCCX q1 q2 q3\n",
+            named=4,
+            bits=0,
+        )
+
+    def _assert_equivalent(self, text: str, *, named: int, bits: int) -> None:
+        """Seeded outcome sets of named qubits and shot phase, every input."""
+
+        kickmix = _kickmix()
+        from vqcc import optimize as optimize_module
+
+        with mock.patch.object(optimize_module, "should_materialize", return_value=True):
+            original, optimized, result = _optimize_text(kickmix, text)
+        self.assertTrue(result.wrote, result.reason)
+        for mask in range(1 << (named + bits)):
+            values = [(mask >> index) & 1 for index in range(named + bits)]
+            left = _named_outcomes(kickmix, original, values, named)
+            right = _named_outcomes(kickmix, optimized, values, named)
+            self.assertEqual(left, right, (values, str(optimized)))
 
     def test_recompute_after_del_and_replays_when_controls_stay(self) -> None:
         kickmix = _kickmix()
@@ -620,6 +710,14 @@ def _optimize_circuit(kickmix, original):
     return original, optimized, result
 
 
+# Seeded, so a run is repeatable. HMR draws its bit per shot; 256 shots make
+# every measured-bit value appear, so the sets compare outcomes, not a sample.
+# With 8 unseeded shots, all eight sometimes drew the same bit and the sets
+# differed on a correct rewrite (about 1 run in 3 failed).
+_SHOT_SEED = 20261118
+_SHOTS = 256
+
+
 def _assert_same_shots(test, kickmix, original, optimized, inputs: int, flag: bool = False) -> None:
     width = 1 << inputs
     if flag:
@@ -627,13 +725,35 @@ def _assert_same_shots(test, kickmix, original, optimized, inputs: int, flag: bo
     for mask in range(width):
         values = [(mask >> index) & 1 for index in range(inputs)]
         bit = (mask >> inputs) & 1 if flag else 0
-        left = _shot_set(kickmix, original, values, bit, shots=8)
-        right = _shot_set(kickmix, optimized, values, bit, shots=8)
+        left = _shot_set(kickmix, original, values, bit, shots=_SHOTS)
+        right = _shot_set(kickmix, optimized, values, bit, shots=_SHOTS)
         test.assertEqual(left, right, (values, bit))
 
 
+def _named_outcomes(kickmix, circuit, values: list[int], named: int) -> set:
+    sim = kickmix.Simulator(batch_size=_SHOTS, seed=_SHOT_SEED)
+    for shot in range(_SHOTS):
+        for index, value in enumerate(values[:named]):
+            sim.write_within_shot(kickmix.q(index), shot, bool(value))
+        for index, value in enumerate(values[named:]):
+            if index < circuit.num_bits:
+                sim.write_within_shot(kickmix.b(index), shot, bool(value))
+    sim.do(circuit)
+    return {
+        (
+            tuple(int(sim.read_within_shot(kickmix.q(index), shot, out=int)) for index in range(named)),
+            str(sim.read_shot_phase(shot)),
+        )
+        for shot in range(_SHOTS)
+    }
+
+
+def _phases(kickmix, circuit, values: list[int], bit: int, shots: int) -> set[str]:
+    return {item[2] for item in _shot_set(kickmix, circuit, values, bit, shots)}
+
+
 def _shot_set(kickmix, circuit, values: list[int], bit: int, shots: int):
-    sim = kickmix.Simulator(batch_size=shots)
+    sim = kickmix.Simulator(batch_size=shots, seed=_SHOT_SEED)
     for index, value in enumerate(values):
         for shot in range(shots):
             sim.write_within_shot(kickmix.q(index), shot, bool(value))

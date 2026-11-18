@@ -456,6 +456,7 @@ class _OpenAnd:
         "born",
         "required",
         "deferred_ops",
+        "deferred_stack",
         "ctrl_vals",
         "and_val",
         "sig",
@@ -471,6 +472,7 @@ class _OpenAnd:
         self.blocked = False
         self.born = born
         self.deferred_ops: tuple[Op, Op] | None = None
+        self.deferred_stack: tuple[int, ...] = ()
         required = set(self.stack)
         if self.explicit is not None:
             required.add(self.explicit)
@@ -545,13 +547,25 @@ class _AndTracker:
             self.held = None
             self.held_stack = ()
             if self._is_fixup(hmr, held_stack, op):
+                # The CZ reads the bit and the controls. Any earlier delayed
+                # pair it conflicts with must be emitted first.
+                flushed = self._flush_conflicts(op, keep=None)
                 self._defer(hmr, op)
-                return []
+                return flushed
             return self._drive(hmr) + self._drive(op)
         if self._should_hold(op):
+            # A held HMR is not driven, so it never passed the conflict check.
+            # dqi uncomputes AND chains back to back on one measurement bit:
+            # HMR t_k b; CZ t_(k-1) c_k if b. Holding without this flush let
+            # pair k jump over pair k+1, whose HMR resets a CZ control of pair
+            # k and overwrites b. That was the Kaggle version 14 dqi FAIL
+            # (phase_errors 50948/102400, value_errors 0).
+            flushed = self._flush_conflicts(op, keep=None)
+            if not self._should_hold(op):
+                return flushed + self._drive(op)
             self.held = op
             self.held_stack = tuple(self.stack)
-            return []
+            return flushed
         return self._drive(op)
 
     def drain(self) -> list[Op]:
@@ -638,14 +652,20 @@ class _AndTracker:
         return [store, hmr, fix]
 
     def _drive(self, op: Op) -> list[Op]:
-        if op.name == "PUSH_CONDITION":
-            if op.condition is not None:
-                self.stack.append(op.condition)
-            return [op]
-        if op.name == "POP_CONDITION":
-            if self.stack:
+        # A delayed HMR/CZ pair belongs to the condition scope it was read in.
+        # Emit it before the scope changes. Kaggle version 14 moved such pairs
+        # past POP_CONDITION, so the HMR fired unconditionally on a |0>
+        # ancilla, drew a random bit, and the CZ fix-up then flipped the
+        # phase on about half the dqi shots (official verifier FAIL,
+        # value_errors 0, phase_errors 50948/102400).
+        if op.name in _BARRIER:
+            flushed = self._flush_all_deferred()
+            if op.name == "PUSH_CONDITION":
+                if op.condition is not None:
+                    self.stack.append(op.condition)
+            elif self.stack:
                 self.stack.pop()
-            return [op]
+            return flushed + [op]
         if op.name == "CCX" and len(op.qubits) == 3:
             replayed = self._replay_same_target(op)
             if replayed is not None:
@@ -698,7 +718,7 @@ class _AndTracker:
             return [op]
         self.values.apply(op, firing)
         if op.name in {"R", "HMR"} and op.qubits:
-            self._mark_zero(op.qubits[0])
+            self._after_reset(op.qubits[0], firing)
             return [op]
         for qubit in _value_writes(op):
             self.proven_zero.discard(qubit)
@@ -728,7 +748,16 @@ class _AndTracker:
     def _defer(self, hmr: Op, cz: Op) -> None:
         rec = self.open[hmr.qubits[0]]
         rec.deferred_ops = (hmr, cz)
+        rec.deferred_stack = tuple(self.stack)
         self.deferred.append(rec)
+
+    def _flush_all_deferred(self) -> list[Op]:
+        out: list[Op] = []
+        for rec in self.deferred:
+            if rec.deferred_ops is not None:
+                out.extend(self._flush_one(rec))
+        self.deferred = []
+        return out
 
     def _coherent_uncompute(self, op: Op) -> bool:
         rec = self.open.get(op.qubits[2])
@@ -786,6 +815,9 @@ class _AndTracker:
         rec.deferred_ops = None
         if ops is None:
             return []
+        if tuple(self.stack) != rec.deferred_stack:
+            # Never emit a measurement under a different condition scope.
+            raise KickmixFormatError("delayed HMR/CZ pair would change condition scope")
         out: list[Op] = []
         for item in ops:
             out.extend(self._apply(item))
@@ -834,9 +866,10 @@ class _AndTracker:
 
     def _emit_instead(self, op: Op) -> list[Op]:
         self._affect(op)
-        self.values.apply(op, firing_bits(self.stack, op.condition))
+        firing = firing_bits(self.stack, op.condition)
+        self.values.apply(op, firing)
         if op.name in {"R", "HMR"} and op.qubits:
-            self._mark_zero(op.qubits[0])
+            self._after_reset(op.qubits[0], firing)
         else:
             for qubit in _value_writes(op):
                 self.proven_zero.discard(qubit)
@@ -871,6 +904,19 @@ class _AndTracker:
             if not _commutes(rec.as_op(), op):
                 rec.blocked = True
                 self._unwatch(rec)
+
+    def _after_reset(self, qubit: int, firing: frozenset[int]) -> None:
+        """Only an unconditional R / HMR proves |0>.
+
+        Under a condition the qubit keeps its old value on shots where the
+        condition is 0. Marking it zero let a later CCX onto it count as a
+        clean AND, and the factor rewrite then copied a wrong value.
+        """
+
+        if firing:
+            self._kill_dirty(qubit)
+        else:
+            self._mark_zero(qubit)
 
     def _mark_zero(self, qubit: int) -> None:
         self._drop(qubit)
@@ -941,12 +987,20 @@ class _AndTracker:
             self.values.force_zero(qubit)
 
     def _swap_proofs(self, left: int, right: int) -> None:
-        left_zero = left in self.proven_zero
-        right_zero = right in self.proven_zero
-        left_dirty = left in self.proven_dirty
-        right_dirty = right in self.proven_dirty
-        self._set_proof(left, right_zero, right_dirty)
-        self._set_proof(right, left_zero, left_dirty)
+        # Swap the effective state, not just the explicit marks. A named
+        # qubit with no mark is "unknown"; copied onto a scratch id with no
+        # mark, the scratch default (|0>) used to claim it clean.
+        left_zero = self._zero_now(left)
+        right_zero = self._zero_now(right)
+        self._set_proof(left, right_zero, not right_zero)
+        self._set_proof(right, left_zero, not left_zero)
+
+    def _zero_now(self, qubit: int) -> bool:
+        if qubit in self.proven_dirty:
+            return False
+        if qubit in self.proven_zero:
+            return True
+        return self.has_registers and qubit not in self.named
 
     def _set_proof(self, qubit: int, is_zero: bool, dirty: bool) -> None:
         if is_zero:
