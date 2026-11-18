@@ -13,7 +13,7 @@ noetl run playbooks/vqcc_pipeline.yaml --runtime local --json
 
 | Piece | Version | Role |
 | --- | --- | --- |
-| NoETL | 5.3.2 | Local playbook runtime. `apiVersion: noetl.io/v2`. |
+| NoETL | 5.3.2: PyPI `noetl==5.3.2` (Rust CLI wheel; recipe at noetl/noetl tag `pypi-v5.3.2`, CLI source noetl/cli tag `v5.3.2`) | Local playbook runtime. `apiVersion: noetl.io/v2`. See [Tutorial-01-Environment](Tutorial-01-Environment). |
 | Python | 3.12 | Adapters, formulas, packaging. |
 | kickmix | 1.0.0 | Public Qualtran package. Builds and measures `.kmx` / `.kmb`. Not the Kaggle `kickmix.so`. |
 
