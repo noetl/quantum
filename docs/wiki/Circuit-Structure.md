@@ -87,7 +87,7 @@ The step JSON field `structure` (and each attempt's `structure`) holds:
   changed. It XORs a different product into the target (`ab`, then
   `a'b'`), so it is neither an uncompute nor a shareable AND. In dqi these
   are GF(2^b) multiply-accumulate steps, not optimizer headroom (see
-  [Decisions log](Decisions-Log)).
+  [issue 19](https://github.com/noetl/quantum/issues/19)).
   `condition_bit_written` means the profile still counted an AND after a
   condition bit was overwritten. `condition_mismatch` is a live AND whose
   firing condition does not match the later `CCX`. The four labels sum to
