@@ -3,6 +3,43 @@
 The baseline is one NoETL playbook. Quantum work is ordinary programs the
 playbook starts. There is no second orchestrator.
 
+## How it runs on NoETL, end to end
+
+Everything is a NoETL playbook run. There is no second orchestrator, no
+hand-run script and no notebook-only logic.
+
+```
+Kaggle notebook (private, Save & Run All, cell 5)
+  └─ git clone noetl/quantum@main ; pip install noetl==5.3.2 kickmix==1.0.0
+  └─ noetl run playbooks/vqcc_optimize.yaml --runtime local --json \
+         --set data_dir=<competition input> --set runs_root=... --set seed=20261108
+        start → check_data
+          → adapt_{invsqrt,dqi,dfthcsos}       import each reference circuit
+          → verify_{...}                       official kickmix verifier: PASS + JSON score
+          → optimize_{...}                     python3 -m vqcc.pipeline optimize --task <t>
+          │     child process, hard deadline (SIGTERM, SIGKILL +60 s)
+          │     stream: normalize → phase merge → AND tracker → cancel window → qubit reuse
+          │     candidate → official verifier → kept only on PASS and a strictly lower score
+          → cost → package (fail-closed, PR #28 layout) → record (provenance.json)
+  └─ vqcc_pipeline.yaml + reference verifiers (cross-check, about 28 min)
+```
+
+- **Validation:** every playbook edit is checked with
+  `POST https://noetl.ai/api/dsl/validate`. The server version and schema
+  digest are recorded in the playbook header.
+- **Budget:** the optimize budget is 25200 s (invsqrt 3780 s, dqi 17640 s
+  share with a 16200 s transform cap, dfthcsos 3780 s). Kaggle kills a run at
+  12 h.
+- **Progress:** `runs/optimize-progress.log` is tailed live into the Kaggle
+  log, and `runs/<id>/optimize/<task>.log` and `.profile.json` are written
+  atomically.
+- **Submission:** not part of the playbook. It needs the owner's gate (see
+  [Status](Status)).
+
+Local development uses the same command with `--set data_dir=<local copy>`.
+The official dqi verifier can also be run alone for fast checks: about 4 s at
+256 shots, and about 85 s at the full 102,400 shots on 4 workers.
+
 ## Runtime
 
 Tested command:

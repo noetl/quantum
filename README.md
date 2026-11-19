@@ -3,6 +3,11 @@
 Home for the NoETL entry in the Kaggle competition
 [Google Quantum AI — Verifiable Quantum Circuit Compilation](https://www.kaggle.com/competitions/google-verifiable-quantum-circuit-compilation).
 
+**Current state:** [STATE.md](STATE.md) is the single source of truth for
+scores (Kaggle-measured vs local), what has been ruled out, and the remaining
+headroom. The wiki dashboard is <https://github.com/noetl/quantum/wiki/Status>.
+Nothing has been submitted.
+
 NoETL playbooks orchestrate the work. The baseline playbook
 `playbooks/vqcc_pipeline.yaml` runs on the NoETL 5.3.2 local runtime. With no
 competition data it blocks verification, writes no circuit, and records
