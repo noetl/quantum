@@ -217,7 +217,7 @@ Progress is appended, flushed on every line, to
 A line is written at each phase boundary (`parse`, `profile`, `restore`,
 `cancel`, `reuse`, `materialize`, `timeout`) and at least every 60 s during
 the stream. It names the phase, gates processed, elapsed time, remaining
-budget, candidate count, and the eligible and control_mutated counts.
+budget, candidate count, and the eligible and same_wire_reaccumulate counts.
 `runs/<run_id>/optimize/<task>.profile.json` and `state.json` are replaced
 atomically on that same cadence. noetl 5.3.2 local runtime returns a shell
 step's stdout and stderr only when the step exits, so a notebook that

@@ -375,7 +375,7 @@ def _note_timeout(runs_root: Path, run_dir: Path, task: str) -> None:
 def _timeout_line(task: str, phase: str) -> str:
     return (
         f"progress task={task} phase={phase} gates=- elapsed_s=- remaining_s=0 "
-        f"candidates=- eligible=- control_mutated=-\n"
+        f"candidates=- eligible=- same_wire_reaccumulate=-\n"
     )
 
 

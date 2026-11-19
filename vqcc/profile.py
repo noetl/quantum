@@ -54,7 +54,7 @@ _LIVE_CAP = 200_000
 _TOP = 5
 _MATCH_REASONS = (
     "eligible",
-    "control_mutated",
+    "same_wire_reaccumulate",
     "condition_bit_written",
     "condition_mismatch",
 )
@@ -208,11 +208,11 @@ class StructureProfiler:
         """Running candidate split. Not a score."""
 
         eligible = self._shared_match["eligible"] + self._uncompute_match["eligible"]
-        mutated = self._shared_match["control_mutated"] + self._uncompute_match["control_mutated"]
+        mutated = self._shared_match["same_wire_reaccumulate"] + self._uncompute_match["same_wire_reaccumulate"]
         return {
             "candidates": self.shared_control_candidates + self.matching_uncompute_pairs,
             "eligible": eligible,
-            "control_mutated": mutated,
+            "same_wire_reaccumulate": mutated,
         }
 
     def note_register_qubits(self, qubits: set[int]) -> None:
@@ -346,11 +346,11 @@ class StructureProfiler:
                         "note": (
                             "Candidates whose controls were written after the AND. "
                             "open is still changed at the later CCX and sums to "
-                            "control_mutated. undone means tracking put the original "
+                            "same_wire_reaccumulate. undone means tracking put the original "
                             "value back on the original qubit (X·X, CX·CX, CCX·CCX, "
                             "CSWAP·CSWAP, SWAP·SWAP). relabelled means an unconditional "
                             "SWAP moved that value onto the later CCX's controls. "
-                            "undone and relabelled are not part of control_mutated. "
+                            "undone and relabelled are not part of same_wire_reaccumulate. "
                             "A reset or a measurement is never undone. A control whose "
                             "pending write stack overflows the per-qubit cap is "
                             "open and is not rewritten. Not a score."
@@ -360,8 +360,11 @@ class StructureProfiler:
                         "One label per profiled candidate. The four labels sum "
                         "to that candidate count. eligible is a strict match the "
                         "transform can apply, including a control that tracking "
-                        "restored or moved with SWAP. control_mutated means a "
-                        "control write was still in effect; the opcode split is "
+                        "restored or moved with SWAP. same_wire_reaccumulate is a "
+                        "later CCX on the same control wires after a control's "
+                        "value changed: it XORs a different product (ab then "
+                        "a'b'), so it is neither an uncompute nor a shareable AND "
+                        "and is not optimizer headroom (#19). The opcode split is "
                         "control_mutation. condition_bit_written means the profile "
                         "still counted an AND after a condition bit was overwritten. "
                         "condition_mismatch is a live AND whose firing condition "
@@ -459,7 +462,7 @@ class StructureProfiler:
 
     def _finish_uncompute(self, op: Op, view: _ProfAnd, label: str, active: frozenset[int]) -> None:
         target = view.target
-        if label == "control_mutated":
+        if label == "same_wire_reaccumulate":
             self.values.apply(op, active)
             self._stamp_mutation(op)
             self._drop(target)
@@ -558,13 +561,17 @@ class StructureProfiler:
         if view.base_epoch and self.values.gave_up(view.base_epoch):
             # The pending-write cap tripped. Do not call this restored.
             if control_values_ok or same_wires:
-                return "control_mutated", "open"
+                return "same_wire_reaccumulate", "open"
             return None, None
         if view.invalid == "condition_bit_written" and (control_values_ok or same_wires):
             return "condition_bit_written", self._mutation_disposition(view, control_values_ok, "condition_bit_written")
         if not control_values_ok:
             if same_wires:
-                return "control_mutated", "open"
+                # Same wires, changed values: the later CCX adds a different
+                # product (for example a GF(2^b) multiply-accumulate step in
+                # dqi). Renamed from control_mutated, which read as blocked
+                # uncompute headroom; it is not (#19).
+                return "same_wire_reaccumulate", "open"
             return None, None
         if not target_ok:
             # The control wires match and the stored bit does not. That is a
@@ -581,7 +588,7 @@ class StructureProfiler:
     def _mutation_disposition(self, view: _ProfAnd, control_values_ok: bool, label: str) -> str | None:
         if view.first_mutation is None:
             return None
-        if label == "control_mutated":
+        if label == "same_wire_reaccumulate":
             return "open"
         if not control_values_ok:
             return None

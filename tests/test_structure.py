@@ -66,11 +66,11 @@ class ProfileTests(unittest.TestCase):
         report = profile_ops(ops, has_registers=False, header_qubits=4)
         toffoli = report["toffoli"]
         self.assertEqual(toffoli["shared_control_candidates"], 1)
-        self.assertEqual(toffoli["match"]["shared_control"]["control_mutated"], 1)
+        self.assertEqual(toffoli["match"]["shared_control"]["same_wire_reaccumulate"], 1)
         self.assertEqual(toffoli["match"]["shared_control"]["eligible"], 0)
         self.assertEqual(toffoli["match"]["control_mutation"]["shared_control"]["X"]["open"], 1)
         self.assertEqual(toffoli["matching_uncompute_pairs"], 1)
-        self.assertEqual(toffoli["match"]["uncompute"]["control_mutated"], 1)
+        self.assertEqual(toffoli["match"]["uncompute"]["same_wire_reaccumulate"], 1)
         self.assertEqual(toffoli["match"]["control_mutation"]["uncompute"]["X"]["open"], 1)
         _assert_mutation_totals(self, toffoli)
         stats = PassStats()
@@ -320,7 +320,7 @@ class RewriteSimulationTests(unittest.TestCase):
         self.assertEqual(same.stats["and_replays"], 0)
         self.assertEqual(same.after["toffoli_like"], same.before["toffoli_like"])
         self.assertEqual(result.after["toffoli_like"], result.before["toffoli_like"])
-        self.assertEqual(result.profile["toffoli"]["match"]["shared_control"]["control_mutated"], 0)
+        self.assertEqual(result.profile["toffoli"]["match"]["shared_control"]["same_wire_reaccumulate"], 0)
         self.assertEqual(result.profile["toffoli"]["shared_control_candidates"], 0)
 
     def test_hot_control_past_the_old_fanout_cap_still_factors(self) -> None:
@@ -512,7 +512,7 @@ class RestoredControlTests(unittest.TestCase):
         report = profile_ops(restored, has_registers=False, header_qubits=4)
         shared = report["toffoli"]["match"]["shared_control"]
         self.assertEqual(shared["eligible"], 1)
-        self.assertEqual(shared["control_mutated"], 0)
+        self.assertEqual(shared["same_wire_reaccumulate"], 0)
         self.assertEqual(report["toffoli"]["match"]["control_mutation"]["shared_control"]["X"]["undone"], 1)
         moved = [
             Op(name="R", qubits=(2,)),
@@ -533,7 +533,7 @@ class RestoredControlTests(unittest.TestCase):
         ]
         stale_report = profile_ops(stale, has_registers=False, header_qubits=5)
         stale_match = stale_report["toffoli"]["match"]
-        self.assertEqual(stale_match["shared_control"]["control_mutated"], 1)
+        self.assertEqual(stale_match["shared_control"]["same_wire_reaccumulate"], 1)
         self.assertEqual(stale_match["control_mutation"]["shared_control"]["SWAP"]["open"], 1)
         reset = [
             Op(name="R", qubits=(2,)),
@@ -542,7 +542,7 @@ class RestoredControlTests(unittest.TestCase):
             Op(name="CCX", qubits=(0, 1, 3)),
         ]
         reset_report = profile_ops(reset, has_registers=False, header_qubits=4)
-        self.assertEqual(reset_report["toffoli"]["match"]["shared_control"]["control_mutated"], 1)
+        self.assertEqual(reset_report["toffoli"]["match"]["shared_control"]["same_wire_reaccumulate"], 1)
         self.assertEqual(reset_report["toffoli"]["match"]["control_mutation"]["shared_control"]["R"]["open"], 1)
         self.assertEqual(reset_report["toffoli"]["match"]["control_mutation"]["shared_control"]["R"]["undone"], 0)
         measured = [
@@ -651,7 +651,7 @@ def _assert_mutation_totals(test: unittest.TestCase, toffoli: dict) -> None:
     for kind, count in expected.items():
         test.assertEqual(sum(match[kind].values()), count)
         opened = sum(row["open"] for row in match["control_mutation"][kind].values())
-        test.assertEqual(opened, match[kind]["control_mutated"])
+        test.assertEqual(opened, match[kind]["same_wire_reaccumulate"])
 
 
 def _assert_permutation(test, kickmix, original, optimized, inputs: int, bits: int, phase: bool) -> None:

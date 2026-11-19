@@ -82,14 +82,19 @@ The step JSON field `structure` (and each attempt's `structure`) holds:
 - `toffoli.match`: for each profiled shared-control candidate and each
   matching uncompute pair, one label. `eligible` is a strict match,
   including a control the tracker restored or moved with `SWAP`.
-  `control_mutated` means a control write was still in effect.
+  `same_wire_reaccumulate` (called `control_mutated` up to version 14)
+  is a later `CCX` on the same control wires after a control's value
+  changed. It XORs a different product into the target (`ab`, then
+  `a'b'`), so it is neither an uncompute nor a shareable AND. In dqi these
+  are GF(2^b) multiply-accumulate steps, not optimizer headroom (see
+  [issue 19](https://github.com/noetl/quantum/issues/19)).
   `condition_bit_written` means the profile still counted an AND after a
   condition bit was overwritten. `condition_mismatch` is a live AND whose
   firing condition does not match the later `CCX`. The four labels sum to
   the candidate count. `control_mutation` splits every control write by
   opcode (`X`, `CX`, `CCX`, `SWAP`, `CSWAP`, `R`, `HMR`, `other`) and by
   `undone`, `relabelled`, or `open`. The `open` counts sum to
-  `control_mutated`. `undone` and `relabelled` are not part of that total.
+  `same_wire_reaccumulate`. `undone` and `relabelled` are not part of that total.
   The attempt `stats` also carry `and_replays`, `left_for_cancellation`,
   and `reject_condition_mismatch`
 - qubit lifetimes: header width, ids touched, unused ids below the header,
@@ -218,7 +223,8 @@ until a later Kaggle run measures a candidate.
 ## Restored controls and SWAP relabels
 
 Kaggle version 10 (notebook scriptVersionId 369071305, main `5e22448`)
-labelled every rejected match `control_mutated`: dqi 832 shared-control
+labelled every rejected match `control_mutated` (the label is now
+`same_wire_reaccumulate`): dqi 832 shared-control
 and 222 uncompute, invsqrt 11 shared-control. `condition_mismatch` and
 `condition_bit_written` were 0, and `and_replays`, `left_for_cancellation`,
 and `reject_condition_mismatch` were 0. Evidence is the comment on
@@ -232,7 +238,7 @@ for dqi.
 the value it had when the AND was computed, and whether tracking had put
 that value back before the later `CCX`.
 
-- `open` is still changed. Those counts sum to `control_mutated`. The
+- `open` is still changed. Those counts sum to `same_wire_reaccumulate`. The
   transform does not rewrite them.
 - `undone` means the value is back on the original qubit. `X`·`X`,
   `CX`·`CX` with the same `CX` control, `CCX`·`CCX`, `CSWAP`·`CSWAP`, and

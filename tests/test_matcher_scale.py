@@ -72,7 +72,7 @@ class MatcherScaleTests(unittest.TestCase):
         report = profile_ops(ops, has_registers=False, header_qubits=40)
         shared = report["toffoli"]["match"]["shared_control"]
         self.assertEqual(shared["eligible"], 0)
-        self.assertEqual(shared["control_mutated"], 1)
+        self.assertEqual(shared["same_wire_reaccumulate"], 1)
 
     def test_swap_routing_longer_than_the_cap_still_relabels(self) -> None:
         ops = [
@@ -88,7 +88,7 @@ class MatcherScaleTests(unittest.TestCase):
         shared = report["toffoli"]["match"]["shared_control"]
         mutation = report["toffoli"]["match"]["control_mutation"]["shared_control"]
         self.assertEqual(shared["eligible"], 1)
-        self.assertEqual(shared["control_mutated"], 0)
+        self.assertEqual(shared["same_wire_reaccumulate"], 0)
         self.assertEqual(mutation["SWAP"]["relabelled"], 1)
 
     def test_task_shares_sum_to_the_seven_hour_budget(self) -> None:
