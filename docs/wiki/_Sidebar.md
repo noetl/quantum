@@ -1,6 +1,9 @@
 **VQCC on NoETL**
 
 - [Home](Home)
+- **[Status](Status)**: the dashboard
+- [Current Problems](Current-Problems)
+- [Decisions Log](Decisions-Log)
 - [Team tutorial](Tutorial)
 - [Architecture](Architecture)
 - [User Guide](User-Guide)

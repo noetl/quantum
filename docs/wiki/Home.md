@@ -3,6 +3,12 @@
 Home for the NoETL entry in
 [Google Quantum AI — Verifiable Quantum Circuit Compilation](https://www.kaggle.com/competitions/google-verifiable-quantum-circuit-compilation).
 
+> **Status, 2026-11-18:** invsqrt PASS 2068786.64, −0.385% vs reference,
+> measured on Kaggle (v9, tied by v14). dqi and dfthcsos are at reference.
+> Nothing has been submitted. Dashboard: **[Status](Status)** ·
+> [Current Problems](Current-Problems) · [Decisions Log](Decisions-Log).
+> Canonical source: [`STATE.md`](https://github.com/noetl/quantum/blob/main/STATE.md).
+
 This wiki matches this tree: verifier JSON score parsing, the default local CLI run (`tests/test_playbook_cli.py`, eleven steps), and the per-task optimization loop (`playbooks/vqcc_optimize.yaml`).
 The spec contract is `specs/001-noetl-pipeline/spec.md` at main
 `0b3915b38fb2de7897b735995b7be33fde617c63`.
@@ -68,16 +74,17 @@ adds Toffolis is not written.
 
 ## What is not done
 
-- No measured improvement on the Kaggle reference circuits. This environment
-  does not have the dataset, so the official verifiers were not run here.
-- No official verifier pass recorded by this repository. The Kaggle dataset
-  needs an account that has accepted the rules. This repo does not accept
-  those rules or submit.
+- Only one measured improvement on the Kaggle reference circuits: invsqrt
+  (v9). dqi and dfthcsos have no kept candidate. See [Status](Status).
+- No Kaggle submission has been made. The notebook is private.
 - FR-006, FR-007, and FR-008 in the spec stay `[NEEDS CLARIFICATION]`.
-- The committed experiments table has no Local or LB numbers.
+- The committed experiments table has no LB numbers.
 
 ## Pages
 
+- **[Status](Status)**: scores, run history, what is submittable
+- [Current Problems](Current-Problems): open levers and questions
+- [Decisions Log](Decisions-Log): decisions and retractions
 - [Team tutorial](Tutorial)
 - [Architecture](Architecture)
 - [User Guide](User-Guide)

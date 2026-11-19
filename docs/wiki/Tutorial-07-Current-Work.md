@@ -5,7 +5,13 @@ This is the wiki copy of `docs/tutorial/07-current-work.md`. Wording matches tha
 
 [History](Tutorial-06-History) · [Index](Tutorial) · Next: [Deliverables](Tutorial-08-Deliverables)
 
-Main is `da8490eed953875d6e7bb3a2f306554f41620905`, the merge of
+> **Current state, 2026-11-18 (main `3e6626f`):** scores, what has been ruled
+> out and the remaining headroom are in [STATE.md](https://github.com/noetl/quantum/blob/main/STATE.md) and on the wiki
+> [Status](Status) page. Retractions are in the
+> [Decisions Log](Decisions-Log). "What main does now" and "What version 9 measured"
+> describe the version 9 tree and are kept as history.
+
+At the time of version 9, main was `da8490eed953875d6e7bb3a2f306554f41620905`, the merge of
 [PR #20](https://github.com/noetl/quantum/pull/20). That PR is the structural
 pass for [issue #19](https://github.com/noetl/quantum/issues/19), and it
 references [#17](https://github.com/noetl/quantum/issues/17) and
@@ -55,28 +61,22 @@ still decides. No score from a later pass is claimed here.
 
 ## What to do next
 
-1. Version 9's provenance is the comment on
-   [issue #19](https://github.com/noetl/quantum/issues/19#issuecomment-6844754721).
-   A later Kaggle run is what measures whether a new Toffoli rewrite
-   lowers a score. Do not fill a score in
-   [the history](Tutorial-06-History) until that run exists.
-2. Read `structure.toffoli.match` before treating a candidate count as
-   work the transform can do. `control_mutation.*.open` is a control write
-   that was still in effect, and `condition_bit_written` is not a rewrite.
-   `undone` and `relabelled` are eligible when the condition matches.
-   `stats.and_replays` and `stats.shared_control_factors` are the
-   applications. Version 10's application counts were 0; that run is the
-   comment on
-   [issue #19](https://github.com/noetl/quantum/issues/19#issuecomment-6851563594).
-3. Spend the next code change on something the cost formula charges:
-   Toffoli count, T count, the invsqrt fine-rotation term, or `Q`. Issue
-   [#19](https://github.com/noetl/quantum/issues/19) still lists cheaper
-   Toffoli constructions (adders, temporary-AND ladders) for blocks the
-   profile actually finds. Keep the fail-closed gate.
-4. Do not edit FR-006, FR-007, or FR-008 in the spec until the clarification
-   in [Open questions](Tutorial-09-Open-Questions) is accepted. The logs are
-   evidence. They are not a spec change.
-5. Do not submit, publish, or share.
+1. Do not start a Kaggle run until a local candidate passes the official
+   verifier with a strictly lower score. The last run was version 14. Its
+   dqi candidate failed on phase errors, and the cause was fixed in
+   [PR #30](https://github.com/noetl/quantum/pull/30).
+2. dqi's only material lever left is a GF(2^12) multiplier with lower
+   multiplicative complexity. That is a separate, larger project. Peephole
+   uncompute rewriting is exhausted.
+3. Read `structure.toffoli.match` labels for what they mean.
+   `same_wire_reaccumulate` (formerly `control_mutated`) is a second product
+   XORed onto the same wires. It is not a blocked uncompute and not headroom.
+4. Any optimizer change ships with regression tests and differential
+   fuzzing, as in PR #30.
+5. Do not edit FR-006, FR-007, or FR-008 in the spec until the clarification
+   in [Open questions](Tutorial-09-Open-Questions) is accepted.
+6. Submissions follow the owner's standing approval and its conditions (see
+   `HANDOVER.md`). Nothing has been submitted.
 
 ## What is already settled, so it is not next
 

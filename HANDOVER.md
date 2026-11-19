@@ -1,9 +1,13 @@
 # Handover: noetl/quantum VQCC optimization loop
 
-Written 2026-11-17 (UTC) for the next agent session that continues this work.
-Read this whole file first, then `specs/001-noetl-pipeline/spec.md`, then
-issues [#19](https://github.com/noetl/quantum/issues/19) and
-[#9](https://github.com/noetl/quantum/issues/9).
+Refreshed 2026-11-18 (UTC), main `3e6626f`. **Current scores, what has been
+ruled out and the real remaining headroom are in [STATE.md](STATE.md), the
+single source of truth.** This file is the operating manual: rules, the Kaggle
+notebook, and how to run a round. Read `STATE.md` first, then this file, then
+`specs/001-noetl-pipeline/spec.md`, then issues
+[#19](https://github.com/noetl/quantum/issues/19) and
+[#9](https://github.com/noetl/quantum/issues/9). The wiki dashboard is
+<https://github.com/noetl/quantum/wiki/Status>.
 
 ## Goal
 
@@ -32,9 +36,19 @@ Each round:
 - **Standing permission:** merge optimizer PRs yourself when CI is green and
   the tests pass, then start the private Kaggle run from `main`. Docs-only PRs
   are for the owner to merge unless the owner says otherwise.
-- **Kaggle:** keep the notebook private. Never submit to the competition,
-  publish, make public, share, invite anyone, or accept rules or terms without
-  the owner's explicit OK. The final submission also needs the owner's OK.
+- **Kaggle:** keep the notebook private. Never publish, make public, share,
+  invite anyone, or accept rules or terms without the owner's explicit OK.
+  Submissions follow the owner's standing approval (2026-11-17), which has
+  conditions:
+  - submit only a package from **one** Kaggle run in which all three tasks
+    PASS the official verifier, with a strictly lower score;
+  - use the fixed packager (PR #28);
+  - respect the daily limit;
+  - submit from `main`;
+  - before the **first-ever** submission, show the owner the package contents
+    and the measured scores in one message.
+
+  No submission has been made yet.
 - A candidate is kept only if the official verifier returns `PASS` and the JSON
   `score` is strictly lower. Never claim a score that a Kaggle run did not
   measure.
@@ -46,11 +60,14 @@ Each round:
 
 ## Scoring (lower is better)
 
-| Task | Formula | Current best | Source |
+Current numbers, with Kaggle-measured and local results marked, are in
+[STATE.md](STATE.md). In short:
+
+| Task | Formula | Best measured on Kaggle | Source |
 | --- | --- | --- | --- |
-| invsqrt | Q × (Toffoli + T/4) | **2068786.6405086848** (Q 259, Toffoli 7735, T 1) | Version 9 |
-| dqi | R × Q² × Toffoli | **24439466758900.453** (Q 1893, Toffoli about 5.7M) | Baseline |
-| dfthcsos | λ × Toffoli × Q | **3355599588.3155375** (Q 730, Toffoli 93237) | Baseline |
+| invsqrt | Q × (Toffoli + T/4) | **2068786.6405086848** (Q 259, Toffoli 7735, T 1) | Version 9, tied by version 14 |
+| dqi | R × Q² × T_mean (per-shot mean Toffoli) | **24439466758900.453** (Q 1893, Toffoli about 5.7M) | Reference |
+| dfthcsos | λ × Toffoli × Q | **3355599588.3155375** (Q 730, Toffoli 93237) | Reference |
 
 dqi profile: about 86M instructions, 3.13M SWAP, 53.9M CX, up to 857 live
 ANDs on one qubit, and peak live qubits equal to the header (1893). It has no
@@ -101,7 +118,8 @@ takes about 28 minutes. Leave them in place unless time runs short.
 | 10 | 369071305 | `5e22448` (PR #23) | No change. Every Toffoli match was rejected as `control_mutated`. |
 | 11 | 369141743 | `b9bb74d` (PR #24) | Killed at 12 h. SWAP relabel was superlinear on dqi. |
 | 12 | 369303709 | `513ad76` (PR #25) | Killed at 12 h. The 9 h budget did not hold, and no optimizer output survived. |
-| 13 | **370491848** | `38c11d2` (PR #26) | **Running at handover.** Started 2026-11-17 02:05 UTC (6:05 PM PT, Nov 16). |
+| 13 | 370491848 | `38c11d2` (PR #26) | The deadline held. invsqrt and dqi timed out from a throughput regression (fixed in PR #27). All tasks at reference. |
+| 14 | not recorded (run `20261117T153014Z-33b3a27c`) | `9208fa2` (PR #27) | First full pass on every task. invsqrt PASS tie. The dqi candidate FAILED (phase errors; the cause was fixed in PR #30). dfthcsos at reference. |
 
 ## What PR #26 changed (now on main)
 
@@ -126,42 +144,36 @@ takes about 28 minutes. Leave them in place unless time runs short.
 
 ## Next steps for the new session
 
-1. **Set up a watch routine for version 13.** Check
-   <https://www.kaggle.com/code/kadyapam/noetl-quantum-competition-pipeline-vqcc?scriptVersionId=370491848>
-   read-only, never cancelling anything. Progress lines should appear live.
-   It should finish about 8 to 9 hours after it started, around 10–11 UTC on
-   Nov 17. Kaggle's hard limit is about 14:05 UTC.
-2. **When it finishes,** download the outputs: `opt.log`, `runs/**/state.json`,
-   the per-task logs and profiles, the official verifier outputs, and the cost.
-   Then:
-   - Compare each task's score with the bests above.
-   - Confirm the deadline held: the end of the optimize step should be at or
-     before `deadline_epoch`.
-   - Report `structure.toffoli.match` (eligible versus control_mutated, split
-     into undone, relabelled and open by opcode), `stats.and_replays`,
-     `stats.shared_control_factors`, and any CCX rewrites.
-   - Post the evidence on #19 and #9, and add the result to the version 13 row
-     in `docs/tutorial/06-history.md` and its wiki mirror.
-3. **Next optimizer lever, if dqi is still unchanged:** cut dqi's Toffoli count.
-   The profile found 832 shared-control candidates and 222 matching uncompute
-   pairs. Version 13 is the first run that can measure whether the
-   restored-control matching (PR #24) turns them into rewrites. If most are
-   still `open`, consider:
-   - widening how far restored-control matching looks, within the time budget;
-   - cheaper Toffoli constructions (temporary-AND ladders, measurement-based
-     uncompute) for the blocks the profile finds (see #19).
-4. **invsqrt:** further gains need a Toffoli cut. There are 11 shared-control
-   candidates, and reuse headroom is already used.
-5. **dfthcsos:** Q is 730 against a per-file width of 119, so look at whether a
-   cross-file qubit reduction is valid under the verifier.
-6. Repeat the loop until scores plateau. Then ask the owner before any Kaggle
-   submission.
+There has been no Kaggle run since version 14, and nothing is submittable.
+See [STATE.md](STATE.md) for the reasons.
+
+1. **Do not start a Kaggle run** until a local candidate passes the official
+   verifier with a strictly lower score. The dqi verifier runs locally in
+   about 4 s at 256 shots, and in about 85 s at the full 102,400 shots on 4
+   workers. Use it before spending a 4–6 h Kaggle run.
+2. **dqi:** the only material lever left is a lower-multiplicative-complexity
+   GF(2^12) multiplier. That is a separate, larger project (see STATE.md,
+   "Real remaining headroom"). Peephole uncompute rewriting is exhausted:
+   1 sound rewrite remains after PR #30, and it does not lower the measured
+   `T_mean`.
+3. **Ruled out, so do not re-propose:**
+   - the dqi "−762 Toffoli" candidate (an optimizer bug, FAIL on Kaggle);
+   - the "CX-blocked uncompute pairs" lever (multiply-accumulates, not
+     uncomputes: 1 applicable pair in all of dqi).
+
+   The profiler label behind the second one is now `same_wire_reaccumulate`
+   (PR #31). It is not headroom. Details:
+   <https://github.com/noetl/quantum/wiki/Decisions-Log>.
+4. **invsqrt** is stuck at the v9 tie, and **dfthcsos** at reference. The
+   only unexplored idea is a cross-file qubit reduction for dfthcsos, and
+   whether the verifier allows it is unknown.
+5. **Owner decision pending:** whether an invsqrt-only package is worth a
+   first submission. The milestone cutoff is 2026-11-20.
+6. Any optimizer change needs regression tests plus differential fuzzing, as
+   in PR #30, so a false gain cannot reach Kaggle again.
 
 ## Other open items
 
-- PR #22 (the version 9 tutorial results and the validator pin) was folded into
-  `main` by this handover commit. Its conflicting sections kept the newer text
-  from `main`. You can close PR #22.
 - There are stale `cursor/*` branches, all already merged by squash. They are
   safe to delete with the owner's OK.
 - Unrelated repos in the same workspace: ehgraph (Rust, `noetl/ehgraph`) and
