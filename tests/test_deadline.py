@@ -145,7 +145,7 @@ class PlaybookDeadlineTests(unittest.TestCase):
                 text = task_log.read_text(encoding="utf-8")
                 self.assertIn("remaining_s=", text)
                 self.assertIn("eligible=", text)
-                self.assertIn("control_mutated=", text)
+                self.assertIn("same_wire_reaccumulate=", text)
 
 
 def _active_state(runs: Path) -> dict:

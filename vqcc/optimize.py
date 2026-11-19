@@ -176,7 +176,7 @@ class ProgressLog:
         self.next_beat = self.started
         self.candidates = 0
         self.eligible = 0
-        self.control_mutated = 0
+        self.same_wire_reaccumulate = 0
         self.handles = []
         for path in paths:
             parent = os.path.dirname(path)
@@ -203,7 +203,7 @@ class ProgressLog:
             f"progress task={self.task} phase={phase} gates={gates} "
             f"elapsed_s={elapsed:.1f} remaining_s={remaining} "
             f"candidates={self.candidates} eligible={self.eligible} "
-            f"control_mutated={self.control_mutated}\n"
+            f"same_wire_reaccumulate={self.same_wire_reaccumulate}\n"
         )
         for handle in self.handles:
             handle.write(line)
@@ -220,14 +220,14 @@ class ProgressLog:
         counts = profiler.match_counts()
         self.candidates = counts["candidates"]
         self.eligible = counts["eligible"]
-        self.control_mutated = counts["control_mutated"]
+        self.same_wire_reaccumulate = counts["same_wire_reaccumulate"]
 
 
 def _progress(task: str | None, gates: int, elapsed: float) -> None:
     print(
         f"progress task={task or '-'} phase=profile+restore+cancel+reuse "
         f"gates={gates} elapsed_s={elapsed:.1f} remaining_s=- "
-        f"candidates=0 eligible=0 control_mutated=0",
+        f"candidates=0 eligible=0 same_wire_reaccumulate=0",
         file=sys.stderr,
         flush=True,
     )
