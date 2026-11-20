@@ -176,10 +176,9 @@ See [STATE.md](STATE.md) for the reasons.
 
 - There are stale `cursor/*` branches, all already merged by squash. They are
   safe to delete with the owner's OK.
-- Unrelated repos in the same workspace: ehgraph (Rust, `noetl/ehgraph`) and
-  qnetmon (`shastaranch/qnetmon`). Do not touch the qnetmon IonQ document
-  ("stop, don't touch it"). Spec step 2 (FR-006/FR-007/FR-008) is blocked
-  until the owner clarifies it.
+- Work only in this repository. Other repositories in the workspace are out
+  of scope. Spec step 2 (FR-006/FR-007/FR-008) is blocked until the owner
+  clarifies it.
 
 ## Team links
 
