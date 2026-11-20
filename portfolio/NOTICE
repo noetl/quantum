@@ -1,0 +1,13 @@
+NoETL VQCC portfolio package
+
+This package contains quantum circuits written by other people and published
+on Kaggle under the Apache License 2.0 (some parts CC0). They are
+redistributed unmodified, except where a file is marked "polish-" in
+CREDITS.md, which means the NoETL rewrite pass (noetl/quantum, Apache-2.0)
+changed it.
+
+Authors and per-file credit chains: see CREDITS.md.
+License text: https://www.apache.org/licenses/LICENSE-2.0
+
+This package counts for leaderboard ranking only. It is not an original
+NoETL result and is not eligible for prizes.

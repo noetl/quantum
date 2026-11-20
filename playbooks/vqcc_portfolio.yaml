@@ -1,0 +1,170 @@
+# Portfolio run: import hash-pinned external circuits, verify every candidate
+# with the official verifiers at several salts, keep the cheapest per task
+# that passes at every salt, optionally polish it with the NoETL rewrite
+# pass, and package the official zip layout.
+#
+# RANKING ONLY. The external circuits are other authors' public work
+# (portfolio/CREDITS.md). A package built from them is not an original
+# NoETL result and is not eligible for prizes.
+#
+# Validate edits with POST https://noetl.ai/api/dsl/validate
+# (python3 scripts/validate_playbooks.py). Nothing in this file submits to
+# Kaggle or publishes anything.
+#
+# Validated 2026-11-20: POST https://noetl.ai/api/dsl/validate HTTP 200,
+# valid true, findings empty. GET /api/dsl/version reported server 3.165.2,
+# schema_digest sha256:25071111774314cbf0c83ee9925b53701c2228232574bda3b13b1e27d58b372c
+# NoETL 5.3.2 local runtime runs kind: shell / cmds and requires a step named start.
+#
+# Fetch the candidates first (git-ignored): scripts/fetch_portfolio.sh
+apiVersion: noetl.io/v2
+kind: Playbook
+metadata:
+  name: vqcc_portfolio
+  path: playbooks/vqcc_portfolio
+workload:
+  data_dir: data
+  runs_root: runs
+  repo_root: "."
+  candidates_dir: candidates
+  manifest: portfolio/candidates.json
+  # Comma-separated. The leading empty item is the verifier's default salt.
+  # The others stand in for the hidden private-board salt.
+  salts: ",noetl-salt-1,noetl-salt-2,noetl-salt-3,noetl-salt-4"
+  # Verifier processes run in parallel per task. Each official verifier
+  # also uses its own worker pool.
+  jobs: "2"
+  polish: "true"
+  polish_budget_s: "1800"
+  dqi_polish_budget_s: "3600"
+workflow:
+  - step: start
+    desc: Create a git-ignored portfolio run directory and pin the manifest.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.portfolio prepare
+          --data-dir "{{ workload.data_dir }}"
+          --candidates-dir "{{ workload.candidates_dir }}"
+          --manifest "{{ workload.manifest }}"
+          --salts "{{ workload.salts }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: import_candidates
+
+  - step: import_candidates
+    desc: Add the reference circuit and every manifest file whose sha256 matches. Refuse the rest.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.portfolio import
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: verify_invsqrt
+
+  - step: verify_invsqrt
+    desc: Official invsqrt verifier on every candidate at every salt.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.portfolio verify
+          --task invsqrt --jobs "{{ workload.jobs }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: verify_dqi
+
+  - step: verify_dqi
+    desc: Official dqi verifier on every candidate at every salt.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.portfolio verify
+          --task dqi --jobs "{{ workload.jobs }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: verify_dfthcsos
+
+  - step: verify_dfthcsos
+    desc: Official dfthcsos verifier on every candidate at every salt.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.portfolio verify
+          --task dfthcsos --jobs "{{ workload.jobs }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: polish_invsqrt
+
+  - step: polish_invsqrt
+    desc: Optional NoETL rewrite pass on the kept invsqrt; the result is one more candidate, verified at every salt.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.portfolio polish
+          --task invsqrt --enabled "{{ workload.polish }}" --budget-s "{{ workload.polish_budget_s }}"
+          --jobs "{{ workload.jobs }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: polish_dqi
+
+  - step: polish_dqi
+    desc: Optional NoETL rewrite pass on the kept dqi; the result is one more candidate, verified at every salt.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.portfolio polish
+          --task dqi --enabled "{{ workload.polish }}" --budget-s "{{ workload.dqi_polish_budget_s }}"
+          --jobs "{{ workload.jobs }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: polish_dfthcsos
+
+  - step: polish_dfthcsos
+    desc: Optional NoETL rewrite pass on the kept dfthcsos; the result is one more candidate, verified at every salt.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.portfolio polish
+          --task dfthcsos --enabled "{{ workload.polish }}" --budget-s "{{ workload.polish_budget_s }}"
+          --jobs "{{ workload.jobs }}"
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: select
+
+  - step: select
+    desc: Per task, keep the cheapest candidate that passed at every salt (worst-salt score). Compute the local geometric mean; leaderboard_score stays null.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.portfolio select
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
+    next:
+      - step: package
+
+  - step: package
+    desc: Write submission.zip in the official layout, with CREDITS.md and NOTICE beside it. Do not submit.
+    tool:
+      kind: shell
+      cmds:
+        - >-
+          cd "{{ workload.repo_root }}" && PYTHONUNBUFFERED=1 python3 -u -m vqcc.portfolio package
+          --runs-root "{{ workload.runs_root }}"
+          --repo-root "{{ workload.repo_root }}"
