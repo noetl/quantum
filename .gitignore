@@ -435,6 +435,8 @@ FodyWeavers.xsd
 /data/
 /submissions/
 /runs/
+# External portfolio circuits (other authors' work, fetched by scripts/fetch_portfolio.sh)
+/candidates/
 
 # kickmix binaries from the Kaggle image, and other native build outputs
 **/kickmix.so

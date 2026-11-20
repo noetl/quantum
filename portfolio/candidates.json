@@ -1,0 +1,72 @@
+{
+  "policy": "RANKING ONLY. These are other authors' public circuits. A package built from them is not an original NoETL result and is not eligible for prizes.",
+  "fetched_at": "2026-11-20T05:36Z",
+  "candidates": [
+    {
+      "task": "invsqrt",
+      "id": "acc7b9c8",
+      "path": "invsqrt.kmb",
+      "sha256": "acc7b9c86b4f65c0204194779a85d2c6b6631538316ffab2091c416a178f60a0",
+      "authors": [
+        "maoxin123",
+        "Syed Asad Ali (generator line)",
+        "Ali Haydar Özdağ (generator line)"
+      ],
+      "license": "Apache-2.0",
+      "source": {
+        "kind": "kaggle_notebook_output",
+        "ref": "alexchilton/28-24-lb-which-circuits-survive-private-salt",
+        "version": 22,
+        "file": "submission.zip",
+        "notebook_license": "Apache-2.0",
+        "url": "https://www.kaggle.com/code/alexchilton/28-24-lb-which-circuits-survive-private-salt",
+        "note": "alex chilton's portfolio notebook ships these files and names their authors; it is the mount, not the author."
+      },
+      "credit": "maoxin123, notebook 'QCC 28.23 | 4,022-Toffoli chemistry loaders', circuit acc7b9c8 (their 2026-11-19 13:04 UTC run): 44 qubits, mean 1,450.44 Toffolis, on the 44-qubit generator line of Syed Asad Ali and Ali Haydar Özdağ."
+    },
+    {
+      "task": "dqi",
+      "id": "f6b555a6",
+      "path": "dqi.kmb",
+      "sha256": "f6b555a64f5924254bb8478c7f95179f49aa1383434c2e8e9b692cde1c44c76b",
+      "authors": [
+        "manwithacat (James Barlow)",
+        "goodpjw2008",
+        "Koushik Rudra",
+        "Syed Asad Ali (decoder line)"
+      ],
+      "license": "Apache-2.0",
+      "source": {
+        "kind": "kaggle_notebook_output",
+        "ref": "alexchilton/28-24-lb-which-circuits-survive-private-salt",
+        "version": 22,
+        "file": "submission.zip",
+        "notebook_license": "Apache-2.0",
+        "url": "https://www.kaggle.com/code/alexchilton/28-24-lb-which-circuits-survive-private-salt",
+        "note": "alex chilton's portfolio notebook ships these files and names their authors; it is the mount, not the author."
+      },
+      "credit": "manwithacat (James Barlow), 'VQCC Hedge Wizardry Notebook' HW-31 f6b555a6 (2026-11-19 20:25 UTC run, dataset vqcc-hedge-wizardry): his edit of goodpjw2008's f56b04c7 ('Semantic Swap-Collapse DQI'), itself an edit of Koushik Rudra's 4471b493 ('QCC v60 frontier verified'), on the decoder line credited in alex chilton's notebook (Syed Asad Ali, Ertuğrul Özer, Balram Srinivasan, GrantPrater, 暗黑AGI, SomeJoint/Agniv Banerjee and others). 890 qubits, mean 365,747.86 Toffolis."
+    },
+    {
+      "task": "dfthcsos",
+      "id": "e6233e86",
+      "path": "dfthcsos",
+      "sha256": "73b4add7554e1442e58a2228377aa4dda55213fe578816a033ff4a71680bbeb0",
+      "authors": [
+        "maoxin123 (4,022-Toffoli loaders)",
+        "weights 6ef06081 (first seen in Manvender Singh's run; shipped by Leo Tang)"
+      ],
+      "license": "Apache-2.0 / CC0 (per the credited notebooks)",
+      "source": {
+        "kind": "kaggle_notebook_output",
+        "ref": "alexchilton/28-24-lb-which-circuits-survive-private-salt",
+        "version": 22,
+        "file": "submission.zip",
+        "notebook_license": "Apache-2.0",
+        "url": "https://www.kaggle.com/code/alexchilton/28-24-lb-which-circuits-survive-private-salt",
+        "note": "alex chilton's portfolio notebook ships these files and names their authors; it is the mount, not the author."
+      },
+      "credit": "Chemistry e6233e86: the weights 6ef06081 on maoxin123's 4,022-Toffoli loaders, first seen in Manvender Singh's 'VQCC 28.23163 LP InvSqrt and DF-THC Refit' 01:25 UTC run and shipped by Leo Tang's 04:21 UTC run. maoxin123 credits the chemistry lineage to Ertuğrul Özer (table line, CC0), prvsiyan (refit, Apache-2.0), Syed Asad Ali (loader design), Lera/marculera (DF-THC pipeline and word codes), Ahmed Berat Özer (progressive rounding), Atakan Aldemir (π-gauge), James Barlow/manwithacat (dfthc_refit, Apache-2.0), Busya PRIME and Heliosli. T 14,706, λ_eff 46.92."
+    }
+  ]
+}
