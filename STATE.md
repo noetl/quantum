@@ -1,51 +1,91 @@
 # VQCC state: the single source of truth
 
-**As of 2026-11-18 (UTC), main `3e6626f`.** This file is the
-canonical snapshot. The wiki [Status](https://github.com/noetl/quantum/wiki/Status)
-page, issues [#19](https://github.com/noetl/quantum/issues/19),
+**As of 2026-11-20 (UTC).** This file is the canonical snapshot. The wiki
+[Status](https://github.com/noetl/quantum/wiki/Status) page, issues
+[#19](https://github.com/noetl/quantum/issues/19),
 [#9](https://github.com/noetl/quantum/issues/9) and
 [#7](https://github.com/noetl/quantum/issues/7), and `HANDOVER.md` point here.
 When they disagree with this file, this file wins. Update it in the same PR
 as any change to scores, levers or submission state.
 
-Every score below is labelled with where it came from:
+Every score below says where it came from:
 
-- **Kaggle**: the official verifier's JSON `score`, measured inside a private
-  Kaggle notebook run. Only these numbers can justify keeping or submitting
-  a candidate.
-- **local**: the same official verifier run on this machine against the
-  competition reference circuits. Useful for debugging, but not a
-  measurement anyone should quote as a result.
+- **Kaggle**: measured on Kaggle, either by the official verifier inside a
+  private notebook run or as a leaderboard score.
+- **local**: the same official verifiers run on a developer machine against
+  the competition data. Not a Kaggle measurement.
 
-## Scores (lower is better)
+## How the leaderboard scores
 
-| Task | Reference (Kaggle, every run) | Best measured on Kaggle | Latest run (v14, Kaggle) | Latest local (main `1bd630c`, unchanged by #31) | Position |
+`score = (ratio_invsqrt × ratio_dqi × ratio_dfthcsos)^(1/3)`, where each
+`ratio = reference cost / submitted cost` is the per-task improvement factor
+from the official verifier's JSON `score`. The reference circuits score
+exactly **1.0**. If any task fails the verifier on the hidden private-board
+salt, the whole submission scores 0 there.
+
+Task costs: invsqrt `Q × (Toffoli + T/4)`; dqi `R(ε⁺) × Q² × T` (per-shot
+mean Toffolis); dfthcsos `λ_eff × T × Q`.
+
+## Two tracks. Keep them apart.
+
+| | Track A: our optimizer | Track B: wrapped public circuits |
+| --- | --- | --- |
+| What it is | `playbooks/vqcc_optimize.yaml`: the NoETL rewrite pass over the reference circuits | `playbooks/vqcc_portfolio.yaml` (PR #34): hash-pinned public circuits by other authors, verified at several salts, packaged by NoETL |
+| Whose circuits | ours (rewrites of the reference) | **other authors'**, credited in `portfolio/CREDITS.md` |
+| Score | **≈ 1.0013** | **≈ 28.24** |
+| Counts for | ranking and prizes (it is original) | **leaderboard ranking only. Not original work, not eligible for prizes.** |
+
+### Track A: our optimizer gets about 1×
+
+| Task | Reference (Kaggle) | Our best (Kaggle) | Ratio |
+| --- | --- | --- | --- |
+| invsqrt | 2076774.233715282 | 2068786.6405086848 (v9, tied by v14, PASS, Q 259) | **1.0039** |
+| dqi | 24439466758900.453 | reference (the correct candidate, local 24439469791639.395, is worse) | **1.0** |
+| dfthcsos | 3355599588.3155375 | reference (no candidate) | **1.0** |
+| **Geometric mean** | | | **≈ 1.0013** (calculated from the Kaggle-measured task scores; this package was never submitted) |
+
+The rewrite pass makes provably exact local rewrites: phase merging,
+inverse-pair cancellation, measurement-based Toffoli uncompute, shared-control
+factoring and scratch-qubit reuse. It keeps the reference algorithm. The
+reference circuits are already well compiled, so it finds almost nothing.
+
+### Track B: wrapped public circuits get about 28× (ranking only)
+
+Run `portfolio-20261120T060028Z-1e4f688f` on the NoETL 5.3.2 local runtime,
+main `bc4c10a` (PR #34). The official verifiers ran on this machine (**local**)
+at 5 salts: the default plus `noetl-salt-1..4`. The verifier's `--salt` was
+used, never `--seed`.
+
+| Task | Kept circuit (author) | Default-salt score (local) | Ratio | Worst of 5 salts | All 5 salts |
 | --- | --- | --- | --- | --- | --- |
-| invsqrt | 2076774.233715282 | **2068786.6405086848**, v9, PASS (Q 260→259, Toffoli 7735, T 1) | PASS 2068786.6405086848 (ties v9) | PASS 2068786.6405086848 | −0.385% vs reference; stuck at the v9 tie |
-| dqi | 24439466758900.453 | reference (no candidate has ever been kept) | candidate **FAIL**: phase errors 50948/102400, value errors 0 (the "−762 Toffoli" was false) | PASS, 0/102400 errors, **24439469791639.395** | the correct candidate is **worse** than reference, so it is not kept |
-| dfthcsos | 3355599588.3155375 | reference (no candidate has ever been written) | PASS on reference, no candidate | not rerun | at reference |
+| invsqrt | `acc7b9c8` (maoxin123) | 74,361.67, Q 44 | **27.93×** | 27.93× | PASS |
+| dqi | `f6b555a6` (manwithacat, on goodpjw2008 / Koushik Rudra) | 345,118,737,157.6, Q 890, 0 errors | **70.81×** | 70.49× (1 phase error in 102,400 at 2 of 5 salts, still PASS) | PASS |
+| dfthcsos | `e6233e86` (weights 6ef06081 on maoxin123's loaders) | 294,642,169.5, Q 427 | **11.39×** | 11.39× | PASS |
+| **Geometric mean** | | | **28.2410** (local calculation) | 28.1978 | |
 
-Formulas: invsqrt `Q × (Toffoli + T/4)`; dqi `R × Q² × T_mean`, where
-`T_mean` is the per-shot mean Toffoli count the verifier measures (not the
-static count); dfthcsos `λ × Toffoli × Q`. FR-006/007/008 in the spec stay
-`[NEEDS CLARIFICATION]`.
+- The 28.2410 matches the public score Kaggle measured for alex chilton's
+  identical zip (28.24094). This repository has not submitted it, so there is
+  no Kaggle measurement of our own.
+- The rewrite pass, run as a polish, found nothing on any of the three
+  circuits.
+- **Ranking only. Not original work, not prize-eligible.** Credits:
+  `portfolio/CREDITS.md`.
 
-## Submittable: nothing yet
+## Submission status
 
-- No submission has ever been made. The notebook
-  `kadyapam/noetl-quantum-competition-pipeline-vqcc` is private.
-- Owner rule: a package must come from **one** Kaggle run in which all three
-  tasks' outputs are present and the official verifier returns PASS, with a
-  strictly lower score. Before the first-ever submit, the package contents
-  and measured scores go to the owner in one message.
-- The bar set for v14 was dqi PASS below 24439466758900.453 and invsqrt at or
-  below 2068786.64. v14's dqi candidate failed, so that bar was not met.
-- The only measured improvement over reference is invsqrt (v9, tied by v14).
-  Whether an invsqrt-only package (dqi and dfthcsos at reference) is worth a
-  first submission is an **open owner decision**. It is not a standing
-  approval.
-- Packaging ([#7](https://github.com/noetl/quantum/issues/7)) was fixed in
-  PR #28 (dfthcsos angle files under their official `.kmb`/`.kmx` names).
+- **Account `kadyapam` has 8 submissions (2026-10-23 to 2026-10-27), best
+  public leaderboard score 21.37712 (Kaggle).** They were made by Dimitri
+  with a separate approach, outside this repository. Their messages credit
+  other teams' public circuits (mrmeows, SomeJoint, heliosli and others).
+  Nothing in this repo produced them, and the repo cannot reproduce them.
+- **Nothing produced by this repository's pipelines has been submitted.**
+  - The Track A invsqrt-only package (≈ 1.0013) was staged and held. It
+    would not change the account's leaderboard position.
+  - The Track B package is staged for the owner's decision. It ranks only
+    and is not prize-eligible.
+- A public notebook is not needed to submit. It is only a condition of the
+  Milestone (Nov 20) and Longest Leader prizes. The Milestone leader is at
+  31.74, so it is out of reach.
 
 ## Kaggle run history
 
@@ -91,34 +131,41 @@ and [#19](https://github.com/noetl/quantum/issues/19).
    both changed by a mix of gates. These have bilinear rank 2, so both
    Toffolis are needed. Not built.
 
-## Real remaining headroom
+## Where real gains come from
 
-- **dqi: a GF(2^12) multiplier redesign.** This is the only material lever
-  left. The Toffolis sit in the multiplier's bilinear products. Cutting them
-  means lowering the multiplicative complexity of each GF(2^12) product
-  (Karatsuba-style or other low-rank multiplication formulas, or a different
-  reduction), not peephole rewriting. It is a separate, larger project:
-  generate a new multiplier, prove it equivalent, keep Q at 1893 or below,
-  and measure `T_mean`, because dqi charges the per-shot mean, not the
-  static count. Nothing has been built or measured.
-- **invsqrt: stuck at the v9 tie.** The 11 shared-control candidates are all
-  same-wire re-accumulates (by `X`), and the qubit-reuse headroom is spent.
-- **dfthcsos: stuck at reference.** The pass finds nothing (0 shared-control
-  candidates, 0 uncompute pairs). A cross-file qubit reduction (Q 730 against
-  a per-file width of 119) is unexplored, and its validity under the verifier
-  is unknown.
+The earlier claim here, that a GF(2^12) multiplier redesign was "the real
+remaining headroom", is withdrawn. It was true only relative to the
+reference decoder. The public field has already replaced the whole design.
+
+- **Our rewrite pass is a tidy pass.** It gets about 1×, and at most about
+  +0.01–0.1% as a polish on top of strong circuits.
+- **Real gains are per-task algorithm redesigns.**
+  - invsqrt: new fixed-point arithmetic, 260 → 44 qubits.
+  - dqi: a different decoder family, 5.7M → 366k Toffolis and 1,893 → 890
+    qubits. dqi has the largest leverage, because Q is squared in its cost.
+  - dfthcsos: a refitted factorization and new lookup loaders.
+
+  This is weeks to months of specialist work per task, with uncertain
+  results. It is not an extension of the rewrite pass.
+- **The wrapper path (Track B) imports strong external circuits.** It
+  reaches the public plateau (≈ 28.24, shared by about 100 teams) for
+  ranking only. Multi-salt verification protects the private board. Beating
+  the 31.74 leader needs about 1.42× better combined than the public best,
+  which only original redesigns can deliver.
 
 ## Deadline
 
-The owner gave the milestone cutoff as **2026-11-20**. With no lever that
-can be built in time, the realistic outcome for that cutoff is either no
-submission or an owner-approved invsqrt-only package.
+The owner's target for 2026-11-20 is a submission done and scored by about
+1:00 PM PT (21:00 UTC), ahead of the 3:59 PM PT cutoff. Any submission needs
+the owner's explicit go.
 
 ## How to reproduce
 
-- Pipeline (NoETL only): `noetl run playbooks/vqcc_optimize.yaml --runtime local`,
-  using the PyPI wheel `noetl==5.3.2` and `kickmix==1.0.0`. Validate playbook
-  edits with `POST https://noetl.ai/api/dsl/validate`.
-- Official dqi verifier, locally: about 4 s at 256 shots and about 85 s at
-  the full 102,400 shots on 4 workers. Kaggle runs are private Save & Run All
-  from `main`. See `HANDOVER.md`.
+- Track A (NoETL only): `noetl run playbooks/vqcc_optimize.yaml --runtime local`,
+  using the PyPI wheel `noetl==5.3.2` and `kickmix==1.0.0`.
+- Track B: `scripts/fetch_portfolio.sh`, then
+  `noetl run playbooks/vqcc_portfolio.yaml --runtime local --json --set data_dir=<competition data> --set candidates_dir=candidates`.
+- Validate playbook edits with `POST https://noetl.ai/api/dsl/validate`.
+- Local verifier times on this machine: invsqrt (44 qubits) about 100 s,
+  dqi (890 qubits) about 95 s, dfthcsos about 17 s. Kaggle runs are private
+  Save & Run All from `main` (see `HANDOVER.md`).

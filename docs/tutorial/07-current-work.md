@@ -62,9 +62,10 @@ still decides. No score from a later pass is claimed here.
    verifier with a strictly lower score. The last run was version 14. Its
    dqi candidate failed on phase errors, and the cause was fixed in
    [PR #30](https://github.com/noetl/quantum/pull/30).
-2. dqi's only material lever left is a GF(2^12) multiplier with lower
-   multiplicative complexity. That is a separate, larger project. Peephole
-   uncompute rewriting is exhausted.
+2. Our rewrite pass is a tidy pass that gets about 1×. Real gains are
+   per-task algorithm redesigns (new decoder, arithmetic or factorization),
+   a larger separate effort. The portfolio pipeline wraps strong external
+   circuits for ranking only; see `STATE.md`.
 3. Read `structure.toffoli.match` labels for what they mean.
    `same_wire_reaccumulate` (formerly `control_mutated`) is a second product
    XORed onto the same wires. It is not a blocked uncompute and not headroom.
@@ -73,7 +74,7 @@ still decides. No score from a later pass is claimed here.
 5. Do not edit FR-006, FR-007, or FR-008 in the spec until the clarification
    in [Open questions](09-open-questions.md) is accepted.
 6. Submissions follow the owner's standing approval and its conditions (see
-   `HANDOVER.md`). Nothing has been submitted.
+   `HANDOVER.md`). Submission status: the account's 8 October submissions (best 21.37712, Kaggle) were made by Dimitri outside this repo; nothing from this repo's pipelines has been submitted.
 
 ## What is already settled, so it is not next
 

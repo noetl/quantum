@@ -4,6 +4,13 @@ Append-only, newest first. Each entry was correct on its date. Where an entry
 disagrees with [`STATE.md`](https://github.com/noetl/quantum/blob/main/STATE.md),
 `STATE.md` is current.
 
+## 2026-11-20: Reframed. Two tracks, and the submission record corrected
+
+- **Withdrawn:** "a GF(2^12) multiplier redesign is the real remaining headroom" (STATE.md, 2026-11-18). It held only relative to the reference decoder. Public circuits already replace the whole decoder (5.7M → 366k Toffolis, 1,893 → 890 qubits).
+- **Clarified:** our rewrite pass is a tidy pass worth about 1× (≈ 1.0013 overall). Real gains come from per-task algorithm redesigns.
+- **Added (PR #34):** a portfolio pipeline that wraps other authors' public circuits, hash-pinned and credited, verified at several salts. It is worth ≈ 28× and counts for **leaderboard ranking only**: it is not original work and is not prize-eligible.
+- **Corrected:** "no submission has ever been made" was true only of this repository. Account `kadyapam` has 8 submissions from 2026-10-23 to 27 (best 21.37712, Kaggle), made by Dimitri outside this repo, and their messages credit public circuits by other teams.
+
 ## 2026-11-18: Profiler label renamed (PR #31)
 
 - `structure.toffoli.match.*.control_mutated` is now `same_wire_reaccumulate`. The old name read as "an uncompute blocked by a control write", which is what produced retraction R2 below.

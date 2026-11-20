@@ -48,7 +48,7 @@ Each round:
   - before the **first-ever** submission, show the owner the package contents
     and the measured scores in one message.
 
-  No submission has been made yet.
+  Submission status: the account's 8 October submissions (best 21.37712, Kaggle) were made by Dimitri outside this repo; nothing from this repo's pipelines has been submitted. See STATE.md.
 - A candidate is kept only if the official verifier returns `PASS` and the JSON
   `score` is strictly lower. Never claim a score that a Kaggle run did not
   measure.
@@ -151,11 +151,11 @@ See [STATE.md](STATE.md) for the reasons.
    verifier with a strictly lower score. The dqi verifier runs locally in
    about 4 s at 256 shots, and in about 85 s at the full 102,400 shots on 4
    workers. Use it before spending a 4–6 h Kaggle run.
-2. **dqi:** the only material lever left is a lower-multiplicative-complexity
-   GF(2^12) multiplier. That is a separate, larger project (see STATE.md,
-   "Real remaining headroom"). Peephole uncompute rewriting is exhausted:
-   1 sound rewrite remains after PR #30, and it does not lower the measured
-   `T_mean`.
+2. **Real gains are per-task algorithm redesigns** (see STATE.md, "Where
+   real gains come from"). The rewrite pass is a tidy pass that gets about
+   1× on the reference circuits; 1 sound uncompute rewrite remains on dqi
+   after PR #30. The portfolio pipeline (`playbooks/vqcc_portfolio.yaml`)
+   imports strong external circuits for ranking only.
 3. **Ruled out, so do not re-propose:**
    - the dqi "−762 Toffoli" candidate (an optimizer bug, FAIL on Kaggle);
    - the "CX-blocked uncompute pairs" lever (multiply-accumulates, not
@@ -167,8 +167,9 @@ See [STATE.md](STATE.md) for the reasons.
 4. **invsqrt** is stuck at the v9 tie, and **dfthcsos** at reference. The
    only unexplored idea is a cross-file qubit reduction for dfthcsos, and
    whether the verifier allows it is unknown.
-5. **Owner decision pending:** whether an invsqrt-only package is worth a
-   first submission. The milestone cutoff is 2026-11-20.
+5. **Owner decision pending:** whether to submit the portfolio package
+   (ranking only). The invsqrt-only package (≈ 1.0013) is held: it would not
+   change the account's leaderboard position.
 6. Any optimizer change needs regression tests plus differential fuzzing, as
    in PR #30, so a false gain cannot reach Kaggle again.
 
