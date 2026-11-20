@@ -3,9 +3,10 @@
 Home for the NoETL entry in
 [Google Quantum AI — Verifiable Quantum Circuit Compilation](https://www.kaggle.com/competitions/google-verifiable-quantum-circuit-compilation).
 
-> **Status, 2026-11-18:** invsqrt PASS 2068786.64, −0.385% vs reference,
-> measured on Kaggle (v9, tied by v14). dqi and dfthcsos are at reference.
-> Nothing has been submitted. Dashboard: **[Status](Status)** ·
+> **Status, 2026-11-20:** our optimizer scores ≈ 1.0013 (invsqrt 1.0039×,
+> Kaggle-measured; dqi and dfthcsos at reference). The portfolio pipeline
+> wraps other authors' public circuits for ≈ 28× (ranking only, not
+> prize-eligible). Submission status: the account's 8 October submissions (best 21.37712, Kaggle) were made by Dimitri outside this repo; nothing from this repo's pipelines has been submitted. Dashboard: **[Status](Status)** ·
 > [Current Problems](Current-Problems) · [Decisions Log](Decisions-Log).
 > Canonical source: [`STATE.md`](https://github.com/noetl/quantum/blob/main/STATE.md).
 

@@ -6,7 +6,9 @@ Home for the NoETL entry in the Kaggle competition
 **Current state:** [STATE.md](STATE.md) is the single source of truth for
 scores (Kaggle-measured vs local), what has been ruled out, and the remaining
 headroom. The wiki dashboard is <https://github.com/noetl/quantum/wiki/Status>.
-Nothing has been submitted.
+Two tracks: our optimizer (≈ 1×) and wrapped public circuits by other
+authors (≈ 28×, leaderboard ranking only, not prize-eligible). Submission
+status: the account's 8 October submissions (best 21.37712, Kaggle) were made by Dimitri outside this repo; nothing from this repo's pipelines has been submitted.
 
 NoETL playbooks orchestrate the work. The baseline playbook
 `playbooks/vqcc_pipeline.yaml` runs on the NoETL 5.3.2 local runtime. With no
